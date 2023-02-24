@@ -5,20 +5,23 @@
 
 @author    Walter Dehnen, Marcin Semczuk
 
-@copyright Walter Dehnen, Marcin Semczuk (2022)
+@copyright Walter Dehnen, Marcin Semczuk (2022,23)
 
 @license   GNU GENERAL PUBLIC LICENSE version 3.0
            see file LICENSE for details
 
 @version   0.1   jun-2022 MS  initial code
 @version   0.2   sep-2022 WD  patternSpeed.py
+@version   0.3   Feb-2023 WD  general m; avoid empty last bin in createBins()
 
 """
-version = '0.2'
+version = '0.3'
 
 import numpy as np
 import warnings
 from variance import variance
+
+debug = 0
 
 def window(Q):
     """compute W(Q) = 2(1-Q)²(1+2Q)"""
@@ -35,8 +38,26 @@ def atan(sin,cos):
     psi = np.arctan2(sin,cos)
     return np.where(psi<0, psi+2*np.pi, psi)
 
+def settrigonometric(x,y,m):
+    """set R² and cosmφ, sinmφ"""
+    if m <= 0:
+        raise Exception("m="+str(m)+" ≤ 0")
+    x2 = x*x
+    y2 = y*y
+    R2 = x2 + y2
+    iR2 = np.reciprocal(R2)
+    nrm = np.sqrt(iR2) if (m&1) else iR2
+    k,Ck,Sk = (1,x*nrm,y*nrm) if (m&1) else (2,(x2-y2)*nrm,2*x*y*nrm)
+    Cm,Sm = (Ck,Sk) if (m&k) else (1,0)
+    kmax = 1<<(m.bit_length()-1)
+    while k+k <= kmax:
+        k,Ck,Sk = k+k, Ck*Ck-Sk*Sk, 2*Ck*Sk
+        if (m&k):
+            Cm,Sm = Cm*Ck-Sm*Sk, Cm*Sk+Sm*Ck
+    return R2,iR2,Cm,Sm
+
 def amplPhase3(x, m=2):
-    """compute amplitude and phase as functions of cos and sin, also Jacobian"""
+    """x=[<1>, <cos(mφ)>, <sin(mφ)>], compute A2 and ψ, and Jacobian"""
     f = np.empty((2))
     J = np.empty((2,3))
     Z = np.hypot(x[1],x[2])
@@ -51,6 +72,7 @@ def amplPhase3(x, m=2):
     return f,J
 
 def amplPhase2(x, C0, m=2):
+    """x=[<cos(mφ)>, <sin(mφ)>], C0=<1>: compute A2 and ψ, and Jacobian"""
     f,J = amplPhase3((C0,x[0],x[1]), m=m)
     return f,J[1:,:]
 
@@ -71,9 +93,87 @@ def phaseOmega(x, m=2):
     J[1,2] = J[0,0]                      # ∂Ω/∂dC = ∂ψ/∂C
     J[1,3] = J[0,1]                      # ∂Ω/∂dS = ∂ψ/∂S
     return f,J
-        
+
+def asfarray(array, copy=False, checkFinite=False):
+    """obtain a new float array from input array"""
+    arr = np.asfarray(array)             # ensure float data type
+    if checkFinite:
+        arr = np.asarray_chkfinite(arr)  # check for NaN or inf
+    if copy and arr is array:
+        arr = np.array(arr,copy=True)    # ensure we make a copy
+    return arr
+
+def createBins(rq, minNBin=4000, maxNBin=50000, maxDexBin=0.15):
+    """
+    create radial bins, used in FourierMethod
+
+    Input data:
+    -----------
+    rq: array like
+        sorted table of radius-squared in ascending order
+
+    Parameters:
+    -----------
+    minNbin: int
+        minimum number of particles in radial bin
+        Default: 4000
+    maxNbin: int
+        maximum number of particles in radial bin
+        Default: 50000
+    maxDexBin: float
+        maximum size of radial bin in log10(R)
+        Default: 0.15
+
+    Returns:
+    --------
+    bins: list of tuples(i0,i1)
+        i0,i1 = start and end indices into the sorted data arrays
+    """
+    # 0.  sanity checks on parameters
+    nP = len(rq)
+    if not type(minNBin) is int:
+        raise Exception("minNBin must be int")
+    if minNBin <= 100:
+        raise Exception("minNBin="+str(minNBin)+" is too small")
+    if minNBin > nP:
+        raise Exception("minNBin="+str(minNBin)+" > numPart="+str(nP))
+    if not type(maxNBin) is int:
+        raise Exception("maxNBin must be int")
+    if minNBin > maxNBin:
+        raise Exception("maxNBin="+str(maxNBin)+" < minNBin="+str(minNBin))
+    if not (type(maxDexBin) is float or type(maxDexBin) is int):
+        raise Exception("maxDexBin must be scalar")
+    if maxDexBin <= 0.0:
+        raise Exception("maxDexBin="+str(maxDexBin)+" ≤ 0")
+    if maxDexBin > 0.2:
+        raise Exception("maxDexBin="+str(maxDexBin)+" is too large")
+    maxRqFac = 10**(2*maxDexBin)
+    # 1 create primary bins
+    wl = nP - minNBin
+    b1 = []
+    i0 = 0
+    i1 = minNBin
+    while i1 < wl:
+        rqm = maxRqFac * rq[i0]
+        im  = min(nP, i0 + maxNBin)
+        i1 += np.searchsorted(rq[i1:im], rqm)
+        b1.append((i0,i1))
+        i0 = i1
+        i1 = i0 + minNBin
+    if i0 < nP:
+        b1.append((i0,nP))
+    # 2 create intermittent bins
+    i0 = (b1[0][0] + b1[0][1])//2
+    bins = [b1[0]]
+    for b in b1[1:]:
+        i1 = (b[0] + b[1])//2
+        bins.append((i0,i1))
+        bins.append(b)
+        i0 = i1
+    return bins
+
 class FourierMethod:
-    """Dehnen et al. (2022) m=2 Fourier method for measuring pattern speed.
+    """Dehnen et al. (2022) Fourier method for measuring pattern speed.
 
     Overview
     --------
@@ -92,10 +192,14 @@ class FourierMethod:
     1.3  findBarRegion()   identifies the bar region as range of bins
     This results in a pair of indices (i0,i1) into the sorted arrays.
 
+    In rare situations, step 1.3 fails to find the bar. This occurs if the
+    maximum A2 is outside the bar, for example due to an infalling satellite.
+    In such cases, a simple fix is to reduce the radial range of the data.
+
     Step 2
     ------
     Measuring ψ and Ω for the bar region takes only one call to
-    measureOmega()   computes {ψ,Ω} and only requires (i0,i1) as input
+    measureOmega()  computes {ψ,Ω} and requires (i0,i1) or (R0,R1) as input
 
     Skipping step 1
     ---------------
@@ -108,16 +212,17 @@ class FourierMethod:
 
     A note on bias
     --------------
-    Our method in step 2 is unbiased, i.e. satisfies ψ=∫Ω dt, as long as
-    (1) the bar region does not change; and
-    (2) the continuity equation holds, i.e. mass is conserved.
-        Strictly, our method in step 1 violates condition (1), but we found the
-    resulting bias to be very minor, much smaller than the statistical
-    uncertainty. Such violations are smaller for narrower bins.
-        Violations of condition (2) may arise from star formation (and stellar
-    mass loss). This problem is avoided by applying the method not only to the
-    star particles, but to all baryonic components combined (if star formation
-    is modelled as transition from the gas phase).
+    Our method in step 2 is unbiased and consistent, i.e. satisfies ψ=∫Ω dt,
+    as long as
+    (1) the radial bar region (R0,R1) does not change; and
+    (2) any particle selection inside the bar region is not based on
+        evolving particle properties (position,velocity)
+
+    see §2.3 of paper. Strictly, our method in step 1 violates condition (1),
+    but we found any bias to be insignificant. Violations of condition (2) are
+    avoided when selecting particles on conserved quantities, such as stellar
+    birth properties (time, location, metallicity) or a random sub-sample
+    (selecting on id).
 
     """
 
@@ -133,12 +238,12 @@ class FourierMethod:
         """number of particles loaded"""
         return len(self.Rq)
 
-    def __init__(self, m, x,y, vx,vy, checkFinite=False):
+    def __init__(self, mu, x,y, vx,vy, m=2, checkFinite=False):
         """step 0  create sorted data arrays
 
         Input Data:
         -----------
-        m : scalar or array-like
+        mu : scalar or array-like
             particle mass(es)
         x : array-like
             centred x positions
@@ -149,38 +254,43 @@ class FourierMethod:
         vy : array-like
             centred y velocities
 
+        When providing only a sub-set of simulation particles, care must be
+        exercised to avoid a selection that leads to a violation of the
+        continuity equation, in particular selecting on the particles
+        instantaneous position or velocity inside the bar region will
+        unavoidably lead to biased results. (See also the explanation
+        in the documentation of patternSpeed.FourierMethod)
+
         Parameters:
         -----------
+        m : int
+            azimuthal wave number > 0
         checkFinite: bool
             check input data for NaN or Inf
-
-        Beware of the note on biases in the documention of
-        patternSpeed.FourierMethod
 
         """
         # 0   get input data to numpy arrays
         asarray = np.asarray_chkfinite if checkFinite else np.asarray
-        m = asarray(m)
-        x = asarray(x)
-        y = asarray(y)
-        vx = asarray(vx)
-        vy = asarray(vy)
+        M = asfarray(mu,checkFinite=checkFinite)
+        X = asfarray(x,checkFinite=checkFinite)
+        Y = asfarray(y,checkFinite=checkFinite)
+        Vx = asfarray(vx,checkFinite=checkFinite)
+        Vy = asfarray(vy,checkFinite=checkFinite)
         # 1   compute derived data
-        self.Rq = x*x + y*y                 # R²
-        iRq = 1/self.Rq                     # 1/R²
-        self.dRq =       2 * (x*vx + y*vy)  # dR²/dt
-        self.dPh =     iRq * (x*vy - y*vx)  # dφ/dt
-        self.mC2 =   m*iRq * (x*x - y*y)    # μ cos2φ
-        self.mS2 = 2*m*iRq *  x*y           # μ sin2φ
+        self.Rq,iRq,Cm,Sm = settrigonometric(X,Y,m)
+        self.m = m
+        self.MCm = M*Cm                 # μ cosmφ
+        self.MSm = M*Sm                 # μ sinmφ
+        self.dRq =   2 * (X*Vx + Y*Vy)  # dR²/dt
+        self.dPh = iRq * (X*Vy - Y*Vx)  # dφ/dt
         # 2   sort data to ascending R²
         i = np.argsort(self.Rq)
         self.Rq = self.Rq[i]
         self.dRq = self.dRq[i]
         self.dPh = self.dPh[i]
-        self.mC2 = self.mC2[i]
-        self.mS2 = self.mS2[i]
-        if len(m) > 1:
-            self.m = m[i]
+        self.MCm = self.MCm[i]
+        self.MSm = self.MSm[i]
+        self.M = M[i] if len(M)>1 else M
 
     def createBins(self, minNBin=4000, maxNBin=50000, maxDexBin=0.15):
         """
@@ -203,47 +313,72 @@ class FourierMethod:
         bins: list of tuples(i0,i1)
             i0,i1 = start and end indices into the sorted data arrays
         """
-        # 0.  sanity checks on parameters
+        return createBins(self.Rq, minNBin=minNBin, maxNBin=maxNBin, \
+                          maxDexBin=maxDexBin)
+
+    def analyseRegion(self, region, tophat=True):
+        """
+        analyse shape and orientation in given region
+
+        Parameters:
+        -----------
+        region: tuple of int
+            indices into sorted arrays, specifying region to analyse
+        tophat: bool
+            use a tophat weighting (instead of a smooth window) for estimating 
+            A2 and ψ in each bin. This is recommended and causes no bias.
+            Default: True
+
+        Result:
+        -------
+        nB:       number of particles in region
+        R0,Rm,R1: inner, middle, and outer radius of region
+        Σ0:       mean surface density in region
+        Am,Ame:   Am=Σm/Σ0 and its statistical uncertainty
+        ψm,ψme    ψm (phase angle) and its statistical uncertainty
+        """
+        i0 = region[0]
+        i1 = region[1]
+        if type(i0) is float:
+            i0 = indexR(i0)
+        if type(i1) is float:
+            i1 = indexR(i1)
+        # 0.2 sanity checks on parameters
         nP = len(self.Rq)
-        if not type(minNBin) is int:
-            raise Exception("minNBin must be int")
-        if minNBin <= 100:
-            raise Exception("minNBin="+str(minNBin)+" is too small")
-        if minNBin > nP:
-            raise Exception("minNBin="+str(minNBin)+" > numPart="+str(nP))
-        if not type(maxNBin) is int:
-            raise Exception("maxNBin must be int")
-        if minNBin > maxNBin:
-            raise Exception("maxNBin="+str(maxNBin)+" < minNBin="+str(minNBin))
-        if not (type(maxDexBin) is float or type(maxDexBin) is int):
-            raise Exception("maxDexBin must be scalar")
-        if maxDexBin <= 0.0:
-            raise Exception("maxDexBin="+str(maxDexBin)+" ≤ 0")
-        if maxDexBin > 0.2:
-            raise Exception("maxDexBin="+str(maxDexBin)+" is too large")
-        maxRqFac = 10**(2*maxDexBin)
-        # 1 create primary bins
-        wl = nP - minNBin
-        b1 = []
-        i0 = 0
-        i1 = minNBin
-        while i1 < wl:
-            Rqm = maxRqFac * self.Rq[i0]
-            im  = min(nP, i0 + maxNBin)
-            i1 += np.searchsorted(self.Rq[i1:im], Rqm)
-            b1.append((i0,i1))
-            i0 = i1
-            i1 = i0 + minNBin
-        b1.append((i0,nP))
-        # 2 create intermittent bins
-        i0 = (b1[0][0] + b1[0][1])//2
-        bins = [b1[0]]
-        for b in b1[1:]:
-            i1 = (b[0] + b[1])//2
-            bins.append((i0,i1))
-            bins.append(b)
-            i0 = i1
-        return bins
+        if i0 < 0:
+            raise runtimeError("i0="+str(i0)+" < 0")
+        if i1 <= i0:
+            raise runtimeError("i1="+str(i1)+" ≤ i0="+str(i0))
+        if nP < i1:
+            raise runtimeError("i1="+str(i1)+" > N="+str(nP))
+        nB = i1-i0
+        Rq0 = 0.5*(  self.Rq[i0]   + self.Rq[i0-1])  if i0 > 0  else 0
+        Rq1 = 0.5*(  self.Rq[i1-1] + self.Rq[i1]  )  if i1 < nP else \
+              0.5*(3*self.Rq[i1-1] + self.Rq[i1-2])
+        Rqm = 0.5*(Rq0+Rq1)
+        Rq = self.Rq[i0:i1]
+        c0 = self.M[i0:i1] if type(self.M) is np.ndarray else self.M
+        cm = self.MCm[i0:i1]
+        sm = self.MSm[i0:i1]
+        iD = 1.0/(Rq1-Rq0)
+        # 1.2  multiply by W(Q) if using smooth window
+        if not tophat:
+            iD = 2*iD
+            q  = np.abs(Rq-Rqm)*iD
+            W  = window(q)
+            c0 = W*c0
+            cm = W*cm
+            sm = W*sm
+        fac = nP * iD / (2*np.pi)
+        # 1.3  sum terms and compute results
+        c0isArray = type(c0) is np.ndarray
+        CCS = variance([c0,cm,sm])       if c0isArray else variance([cm,sm])
+        CCS.scale(fac)
+        Sd0 = CCS.mean(0)                if c0isArray else c0 * fac
+        APm = CCS.propagate(amplPhase3,args=(self.m,))    if c0isArray else \
+              CS2.propagate(amplPhase2,args=(Sd0,self.m,))
+        return nB, np.sqrt(Rq0), np.sqrt(Rqm), np.sqrt(Rq1), Sd0, \
+            APm.mean(0), APm.std_of_mean(0), APm.mean(1), APm.std_of_mean(1)
 
     def analyseBins(self, bins, tophat=True):
         """
@@ -264,52 +399,13 @@ class FourierMethod:
             binData[:,0]    number of particles in bin
             binData[:,1:3]  inner, middle, and outer radius of bin
             binData[:,4]    mean surface density Σ0 in bin
-            binData[:,5:6]  A2=Σ2/Σ0 and its statistical uncertainty
-            binData[:,7:8]  ψ2 and its statistical uncertainty
+            binData[:,5:6]  Am=Σm/Σ0 and its statistical uncertainty
+            binData[:,7:8]  ψm and its statistical uncertainty
         """
-        nP = len(self.Rq)
         binData = np.empty((len(bins),9))
         i = 0
-        # 1.  loop bins
         for b in bins:
-            # 1.1  find edge and rms radii, set reduced arrays
-            i0 = b[0]
-            i1 = b[1]
-            nB = i1-i0
-            Rq0 = 0.5*(  self.Rq[i0]   + self.Rq[i0-1])  if i0 > 0  else 0
-            Rq1 = 0.5*(  self.Rq[i1-1] + self.Rq[i1]  )  if i1 < nP else \
-                  0.5*(3*self.Rq[i1-1] + self.Rq[i1-2])
-            Rqm = 0.5*(Rq0+Rq1)
-            Rq = self.Rq[i0:i1]
-            c0 = self.m[i0:i1] if type(self.m) is np.ndarray else self.m
-            c2 = self.mC2[i0:i1]
-            s2 = self.mS2[i0:i1]
-            iD = 1.0/(Rq1-Rq0)
-            # 1.2  multiply by W(Q) if using smooth window
-            if not tophat:
-                iD = 2*iD
-                q  = np.abs(Rq-Rqm)*iD
-                W  = window(q)
-                c0 = W*c0
-                c2 = W*c2
-                s2 = W*s2
-            fac = nP * iD / (2*np.pi)
-            AP2 = None
-            Sd0 = None
-            # 1.3  sum terms and compute results
-            if type(c0) is np.ndarray:
-                CCS = variance([c0,c2,s2])
-                CCS.scale(fac)
-                Sd0 = CCS.mean(0)
-                AP2 = CCS.propagate(amplPhase3)
-            else:
-                CS2 = variance([c2,s2])
-                CS2.scale(fac)
-                Sd0 = c0 * fac
-                AP2 = CS2.propagate(amplPhase2,args=(Sd0))
-            binData[i,:] = nB,np.sqrt(Rq0),np.sqrt(Rqm),np.sqrt(Rq1),Sd0, \
-                AP2.mean(0), AP2.std_of_mean(0), \
-                AP2.mean(1), AP2.std_of_mean(1)
+            binData[i,:] = self.analyseRegion(b,tophat)
             i += 1
         return binData
             
@@ -317,6 +413,11 @@ class FourierMethod:
                       minDexBar=0.2, minNumBar=100000):
         """
         step 1.3  find bar region (see Dehnen et al 2022, Appendix C).
+        ONLY sensible for self.m == 2
+
+        In rare situations, this fails to find the bar. This occurs if the
+        maximum A2 is outside the bar, for example due to a satellite.
+        In such cases, a simple fix is to reduce the radial range of the data.
 
         Input data:
         -----------
@@ -344,7 +445,10 @@ class FourierMethod:
         --------------
             i0,i1: indices into sorted data arrays for bar region
         """
-        # 0.  sanity checks on parameters
+        # 0.  sanity checks
+        if not self.m == 2:
+            raise Exception("the bar region should be defined using "\
+                            "the m=2 Fourier analysis")
         if not type(minA2Bar) is float:
             raise Exception("minA2Bar must be float")
         if minA2Bar <= 0.0:
@@ -403,16 +507,67 @@ class FourierMethod:
             return 0,0
         return i0,i1
 
-    def measureOmega(self, barRegion, tophat=False):
+    def findBarRange(self,  minNBin=4000, maxNBin=50000, maxDexBin=0.15,\
+                minA2Bar=0.2, maxDPsi=10.0, minDexBar=0.2, minNumBar=100000,
+                tophat=True):
+        """step 1:  find bar region in one call
+
+        ONLY sensible for self.m == 2
+
+        Parameters:
+        -----------
+        minNbin: int
+            minimum number of particles in radial bin
+            Default: 4000
+        maxNbin: int
+            maximum number of particles in radial bin
+            Default: 50000
+        maxDexBin: float
+            maximum size of radial bin in log10(R)
+            Default: 0.15
+        minA2bar: float
+            minimum A2 = Σ2/Σ0 needed for bar
+            Default: 0.2
+        maxDPsi: float (or int)
+            maximum angular width of bar [degrees]
+            Default: 10
+        minDexBar: float
+            minimum required size of bar in log10(R)
+            Default: 0.2
+        minNumBar: int
+            minimum required number of particles in bar region
+            Default: 100000
+        tophat: bool
+            use a tophat weighting (instead of a smooth window) for estimating 
+            A2 and ψ in each bin. This is recommended and causes no bias.
+            Default: True
+
+        Returns: i0,i1
+        --------------
+            i0,i1: indices into sorted data arrays for bar region
+        """
+        bins = self.createBins(minNBin=minNBin, maxNBin=maxNBin, \
+                               maxDexBin=maxDexBin)
+        binData = self.analyseBins(bins, tophat=tophat)
+        return self.findBarRegion(bins,binData,minA2Bar=minA2Bar, \
+                                  maxDPsi=maxDPsi, minDexBar=minDexBar, \
+                                  minNumBar=minNumBar)
+
+    def measureOmega(self, barRegion, tophat=False, fullSample=False):
         """step 2:  obtain ψ, Ω and their uncertainties
 
         Parameters:
         -----------
-        barRegion: iterable with (at least) two entries: (i0,i1) or (R0,R1)
+        barRegion: iterable with two entries: (i0,i1) or (R0,R1)
             first and end indices or radii of bar region, for example the
             output from findBarRegion()
             If there are less than 100 particles in the bar region, no analysis
             is performed and all zero returned.
+        fullSample: boolean
+            compute uncertainties based on the full sample or only the
+            sub-sample in the barRegion? If true, we add for each particle
+            outside the barRegion a data entry with zero weight and use for N
+            the full sample size.
 
         Returns: R0, Rm, R1, ψ, ψe, Ω, Ωe, C
         ------------------------------------
@@ -420,6 +575,14 @@ class FourierMethod:
             ψ,ψe     = bar phase and its statistical uncertainty
             Ω,Ωe     = bar pattern speed and its statistical uncertainty
             C        = statistical correlation between ψ and Ω
+
+        A note on bias
+        --------------
+        The measurement of Ω will be unbiased, if either all particles within
+        the bar region have been selected (at initialisation) or if any
+        selection within that region is based on strictly conserved quantities
+        such as stellar birth properties (time, location, and metallicity), or
+        particle type (baryonic/non-baryonic)
 
         """
         # 0.  prepare
@@ -434,9 +597,9 @@ class FourierMethod:
         nP = len(self.Rq)
         if i0 < 0:
             raise runtimeError("i0="+str(i0)+" < 0")
-        if i1 < i0:
+        if i1 <= i0:
             raise runtimeError("i1="+str(i1)+" ≤ i0="+str(i0))
-        if nP <= i1:
+        if nP < i1:
             raise runtimeError("i1="+str(i1)+" > N="+str(nP))
         nB = i1-i0
         if nB < 100:
@@ -451,11 +614,12 @@ class FourierMethod:
               0.5*(3*self.Rq[i1-1] + self.Rq[i1-2])
         im  = (i1+i0)//2
         Rqm = self.Rq[im] if (nB%2)==0 else 0.5 * (self.Rq[im] + self.Rq[im+1])
-        # 2.  set  m W{cos2φ,sin2φ} and their time derivatives
-        c2  =   self.mC2[i0:i1]                         # μ cos2φ
-        s2  =   self.mS2[i0:i1]                         # μ sin2φ
-        dc2 =-2*self.dPh[i0:i1]*s2                      # μ d(cos2φ)/dt
-        ds2 = 2*self.dPh[i0:i1]*c2                      # μ d(sin2φ)/dt
+        # 2.  set  m W{cos(mφ),sin(mφ)} and their time derivatives
+        mu  = self.M[i0:i1]
+        cm  = self.MCm[i0:i1]                           # μ cosmφ
+        sm  = self.MSm[i0:i1]                           # μ sinmφ
+        dcm =-self.m*self.dPh[i0:i1]*sm                 # μ d(cosmφ)/dt
+        dsm = self.m*self.dPh[i0:i1]*cm                 # μ d(sinmφ)/dt
         if not tophat:
             Q   = self.Rq[i0:i1]-Rqm                    # R²-Rm²
             fac = np.where(Q<0,1/(Rq0-Rqm),1/(Rq1-Rqm)) # 1/(Re²-Rm²)
@@ -463,20 +627,29 @@ class FourierMethod:
             W,dW= windowDeriv(Q)                        # W(Q), dW/dQ
             dW *= fac                                   # dW/dR²
             dW *= self.dRq[i0:i1]                       # dW/dt
-            c2  = W*c2                                  # μ W cos2φ
-            s2  = W*s2                                  # μ W sin2φ
-            dc2 = W*dc2 + dW*self.mC2[i0:i1]            # μ d(W cos2φ)/dt
-            ds2 = W*ds2 + dW*self.mS2[i0:i1]            # μ d(W sin2φ)/dt
+            mu  = W*mu
+            cm  = W*cm                                  # μ W cosmφ
+            sm  = W*sm                                  # μ W sinmφ
+            dcm = W*dcm + dW*self.MCm[i0:i1]            # μ d(W cosmφ)/dt
+            dsm = W*dsm + dW*self.MSm[i0:i1]            # μ d(W sinmφ)/dt
         # 3.  compute sample mean and co-variance
-        var = variance([c2,s2,dc2,ds2])
+        var = variance([cm,sm,dcm,dsm])
+        if debug > 1:
+            vmu = variance([mu])
+            print("<1,cm,sm>=",vmu.mean(),var.mean(0),var.mean(1))
+        if fullSample:
+            var.append_zero(len(self.MCm) - len(cm))
+        if debug > 1:
+            print("μ=",var.mean())
+            print("σ=",var.std_of_mean())
         # 4.  compute ψ, Ω, their uncertainties, and correlation
-        var = var.propagate(phaseOmega)
+        var = var.propagate(phaseOmega, args=(self.m,))
         return np.sqrt(Rq0),np.sqrt(Rqm),np.sqrt(Rq1), \
                var.mean(0), var.std_of_mean(0), \
                var.mean(1), var.std_of_mean(1), \
                var.corr(0,1)
-    
-def patternSpeedFourier(m, x,y, vx, vy, checkFiniteInput=False,
+
+def patternSpeedFourier(mu, x,y, vx, vy, checkFiniteInput=False,
                         minNBin=4000, maxNBin=50000, maxDexBin=0.15, \
                         minA2Bar=0.2, maxDPsi=10.0, minDexBar=0.2, \
                         minNumBar=100000, tophatWithBins=True, tophat=False):
@@ -485,7 +658,7 @@ def patternSpeedFourier(m, x,y, vx, vy, checkFiniteInput=False,
 
     Input Data:
     -----------
-    m : float or 1D numpy array
+    mu : float or 1D numpy array
         particle mass(es)
     x : numpy 1D array
         centred x positions
@@ -544,7 +717,7 @@ def patternSpeedFourier(m, x,y, vx, vy, checkFiniteInput=False,
         Ω,Ωe     = bar pattern speed and its statistical uncertainty
         C        = statistical correlation between ψ and Ω
     """
-    tool = FourierMethod(m,x,y,vx,vy,checkFinite=checkFiniteInput)
+    tool = FourierMethod(mu,x,y,vx,vy,checkFinite=checkFiniteInput)
     bins = tool.createBins(minNBin=minNBin,maxNBin=maxNBin,maxDexBin=maxDexBin)
     binData = tool.analyseBins(bins,tophat=tophatWithBins)
     barRegion = tool.findBarRegion(bins,binData,minA2Bar=minA2Bar,\
