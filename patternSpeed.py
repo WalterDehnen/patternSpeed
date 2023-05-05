@@ -370,13 +370,31 @@ class FourierMethod:
             cm = W*cm
             sm = W*sm
         fac = nP * iD / (2*np.pi)
+        c0 *= fac
+        cm *= fac
+        sm *= fac
+        # TEST
+        if debug > 1:
+            print('c0=',c0)
+            print('cm=',cm)
+            print('sm=',sm)
+        # TSET
         # 1.3  sum terms and compute results
         c0isArray = type(c0) is np.ndarray
         CCS = variance([c0,cm,sm])       if c0isArray else variance([cm,sm])
-        CCS.scale(fac)
+        # TEST
+        if debug > 0:
+            print('m=2: μ(c0,cm,sm)=',CCS.mean())
+            print('m=2: σ(c0,cm,sm)=',CCS.std_of_mean())
+        # TSET
         Sd0 = CCS.mean(0)                if c0isArray else c0 * fac
         APm = CCS.propagate(amplPhase3,args=(self.m,))    if c0isArray else \
               CS2.propagate(amplPhase2,args=(Sd0,self.m,))
+        # TEST
+        if debug > 0:
+            print('m=2: μ(A,ψ)=',APm.mean())
+            print('m=2: σ(A,ψ)=',APm.std_of_mean())
+        # TSET
         return nB, np.sqrt(Rq0), np.sqrt(Rqm), np.sqrt(Rq1), Sd0, \
             APm.mean(0), APm.std_of_mean(0), APm.mean(1), APm.std_of_mean(1)
 
