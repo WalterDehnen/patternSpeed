@@ -129,7 +129,8 @@ def convertAlpha(x):
 class FourierMethod:
     """
     Fourier method for measuring pattern speed, as described by
-    Dehnen et al. (2023, MNRAS, 518, 2712) 
+    Dehnen et al. (2023, MNRAS, 518, 2712), though with improved
+    bar finding method.
 
     Methods
     -------
@@ -164,12 +165,14 @@ class FourierMethod:
     Finding the bar region is done in 2 steps:
     1.1  analyseDisc()     Fourier analysis radial bins
     1.2  findBarRegion()   identifies the bar region as range of bins
-    This results in a pair of indices (i0,i1) into the sorted arrays.
+    This results in (i0,i1,Rm), with i0,i1 the begin and end indices into the
+    bar region and Rm the radius of maximum bar strength.
 
     Step 2
     ------
     Measuring ψ and Ω for the bar region takes only one call to
-    measureOmega()  computes {ψ,Ω} and requires (i0,i1) or (R0,R1) as input
+    measureOmega()  computes {ψ,Ω} and requires (i0,i1[,Rm]) or (R0,R1[,Rm])
+    as input, using the median of R0,R1 if Rm is not given.
 
     Skipping step 1
     ---------------
@@ -725,7 +728,7 @@ class FourierMethod:
             Default: 2
     
         Return:
-        pandas.Series holding R0,Rm,,R1,ψ,Ω,ψ_e,Ω_e,corr(ψ,Ω)
+        pandas.Series holding R0,Rm,R1,ψ,Ω,ψ_e,Ω_e,corr(ψ,Ω)
         
         """
         if m < 1:
