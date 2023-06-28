@@ -830,6 +830,7 @@ class FourierMethod:
         -----------
         m: int
             azimuthal wavenumber of wave to measure pattern speed for
+            Default: 2
         checkFiniteInput: bool
             check input data for NaN or Inf
             Default: False
@@ -867,6 +868,7 @@ class FourierMethod:
 
         Returns:
             pandas.Series holding R0,R1,Rm,ψ,Ω,ψ_e,Ω_e,corr(ψ,Ω)
+            if a bar can be found
         """
         tool = FourierMethod(x,y,vx,vy,mu,checkFinite=checkFiniteInput)
         bar  = tool.findBar(maxm=maxm, tophat=tophatFourier,
@@ -875,5 +877,6 @@ class FourierMethod:
                             minMaxBarStrength=minMaxBarStrength,
                             maxDPsi=maxDPsi, minDexBar=minDexBar,
                             minNumBar=minNumBar)
-        return tool.measureOmega(bar,m=m)
+        if bar[0] < bar[1]:
+            return tool.measureOmega(bar,m=m)
 
