@@ -10,13 +10,14 @@
 @license   GNU GENERAL PUBLIC LICENSE version 3.0
            see file LICENSE for details
 
-@version   0.1   jun-2022 MS  initial code
-@version   0.2   sep-2022 WD  patternSpeed.py
-@version   0.3   feb-2023 WD  general m; avoid empty last bin in createBins()
-@version   0.4   may-2023 WD  analyse m=1...maxm, using pandas, better bar find
+@version   0.1    jun-2022 MS  initial code
+@version   0.2    sep-2022 WD  patternSpeed.py
+@version   0.3    feb-2023 WD  general m; avoid empty last bin in createBins()
+@version   0.4    may-2023 WD  analyse m=1...maxm, using pandas, better bar find
+@version   0.4.1  jun-2023 WD  minor debug, improved error/warning
 
 """
-version = '0.4'
+version = '0.4.1'
 
 import numpy as np
 import pandas as pd
@@ -200,8 +201,27 @@ class FourierMethod:
     """
     
     class Default:
-        """ hold default parameters used in methods """
-        maxm=6
+        """ holds default parameters
+        maxm: 8
+            maximum azimuthal wavenumber m
+        minNBin: 4000
+            minimum number of particles in radial bin
+        maxNBin: 32000
+            maximum number of particles in radial bin
+        maxDexBin: 0.1
+            if NBin > minNBin: maximum extent of radial bin in log10(R)
+        minMaxBarStrength: 0.2
+            require max{bar strength} > minMaxBarStrength for bar
+        minBarStrength: 0.05
+            requite bar strength > minBarStrength in bar region
+        maxDPsi: 10
+            maximum spread [degrees] of ψ[m=2] in bar region
+        minDexBar: 0.2
+            minimum required extent of bar region in log10(R)
+        minNumBar: 100000
+            minimum required number of particles in bar region
+        """
+        maxm=8
         minNBin=4000
         maxNBin=32000
         maxDexBin=0.1
@@ -238,12 +258,12 @@ class FourierMethod:
             check input data for NaN or Inf
 
         """
-        # 0   get input data to numpy arrays
+        # 0  get input data to numpy arrays
         X = asfarray(x,checkFinite=checkFinite)
         Y = asfarray(y,checkFinite=checkFinite)
         Vx = asfarray(vx,checkFinite=checkFinite)
         Vy = asfarray(vy,checkFinite=checkFinite)
-        # 1   compute derived data and sort them ascendingly in R²
+        # 1  compute derived data and sort them ascendingly in R²
         Rq = X*X + Y*Y
         dRq = (X*Vx+Y*Vy)*2
         dPh = (X*Vy-Y*Vx)/Rq
@@ -258,7 +278,6 @@ class FourierMethod:
         R = np.sqrt(self.Rq)
         self.Cph = X[i]/R
         self.Sph = Y[i]/R
-        self.debug = 0
         
     def radius(self,i):
         """radius for given index (or indices) into sorted tables"""
@@ -290,8 +309,11 @@ class FourierMethod:
             i0 = self.indexR(i0)
         if type(i1) is float:
             i1 = self.indexR(i1)
+        if i0 == 0 and i1 == 0:
+            raise RuntimeError("i0,i1=0,0, suggesting that "
+                               "findBarRegion() failed to find a bar")
         if i1 <= i0:
-            raise RuntimeError("i1="+str(i1)+" ≤ i0="+str(i0))
+            raise RuntimeError("i0="+str(i0)+" ≥ i1="+str(i1))
         if i0 < 0:
             warnings.warn("i0="+str(i0)+" < 0: will take i0=0 instead")
             i0 = 0
@@ -301,28 +323,46 @@ class FourierMethod:
             i1 = nP
         return i0,i1
     
+    def i0i1R0RmR1iDQfac(self, region):
+        """ auxiliary for analyseRegion() and measureOmega() """
+        i0,i1 = self.unpackRegion(region)
+        nP  = len(self.Rq)
+        nB  = i1-i0
+        Rq0 = 0.5*(  self.Rq[i0]   + self.Rq[i0-1])  if i0 > 0  else 0
+        R0  = np.sqrt(Rq0)
+        Rq1 = 0.5*(  self.Rq[i1-1] + self.Rq[i1]  )  if i1 < nP else \
+              0.5*(3*self.Rq[i1-1] + self.Rq[i1-2])
+        R1  = np.sqrt(Rq1)
+        iD  = 1.0/(Rq1-Rq0)
+        if len(region)>2:
+            Rm  = region[2]
+            Rqm = Rm*Rm
+        else:
+            im  = (i1+i0)//2
+            Rqm = self.Rq[im] if (nB%2)==0 else (self.Rq[im]+self.Rq[im+1])/2
+            Rm  = np.sqrt(Rqm)
+        Q   = self.Rq[i0:i1]-Rqm                    # R²-Rm²
+        fac = np.where(Q<0,1/(Rq0-Rqm),1/(Rq1-Rqm)) # 1/(Re²-Rm²)
+        Q  *= fac                                   # Q=(R²-Rm²)/(Re²-Rm²)
+        return i0,i1,R0,Rm,R1,iD,Q,fac
+
     def analyseAux(self,H,dPh,iD,mW,mdWt=None,mdWx=None,correlation=False):
         """
         auxiliary for analyseRegion() and measureOmega()
         compute A,ψ[,Ω][,α] and their uncertainties for a set of particles
         """
-        lst = [mW]
-        lst.append(mW*H.Cm)                          # μ cosmφ
-        lst.append(mW*H.Sm)                          # μ sinmφ
-        inp = ['c0','cm','sm']
+        lst = [mW]                                   # μ W
+        lst.append(mW*H.Cm)                          # μ W cosmφ
+        lst.append(mW*H.Sm)                          # μ W sinmφ
         prp = ['A','ps']
         if not mdWt is None:
             lst.append(mdWt*H.Cm - H.m*mW*H.Sm*dPh)  # μ d(W cosmφ)/dt
             lst.append(mdWt*H.Sm + H.m*mW*H.Cm*dPh)  # μ d(W sinmφ)/dt
             prp.append('Om')
-            inp.append('dcm/dt')
-            inp.append('dsm/dt')
         if not mdWx is None:
             lst.append(mdWx*H.Cm)                    # μ d(W cosmφ)/dlnR
             lst.append(mdWx*H.Sm)                    # μ d(W sinmφ)/dlnR
             prp.append('al')
-            inp.append('dcm/dX')
-            inp.append('dsm/dX')
         var = variance(lst)
         var.scale(dPh.size*iD/np.pi)
         var = var.propagate(convertFourier, args=(H.m,))
@@ -339,7 +379,8 @@ class FourierMethod:
     def analyseRegion(self, region, maxm=Default.maxm,
                       computeOmega=False, computeAlpha=False, tophat=False):
         """
-        compute A,ψ[,Ω][,α] and their uncertainties for particles in region
+        compute A,ψ[,Ω][,α] and their uncertainties for m=1...maxm and 
+        particles in region
 
         Parameters:
         -----------
@@ -365,27 +406,13 @@ class FourierMethod:
         if tophat is None:
             tophat = not (computeOmega or computeAlpha)
         if computeAlpha and tophat:
-            raise Exception("cannot compute alpha using tophat")
+            raise Exception("cannot compute alpha using a tophat window")
         if computeOmega and tophat:
             text = "measuring a pattern speed with a top-hat "+\
                    "window gives biased results"
             warnings.warn(text)
-        i0,i1 = self.unpackRegion(region)
-        nP = len(self.Rq)
-        nB = i1-i0
-        H = harmonic(self.Cph[i0:i1],self.Sph[i0:i1],m=0)
-        Rq0 = 0.5*(  self.Rq[i0]   + self.Rq[i0-1])  if i0 > 0  else 0
-        R0  = np.sqrt(Rq0)
-        Rq1 = 0.5*(  self.Rq[i1-1] + self.Rq[i1]  )  if i1 < nP else \
-              0.5*(3*self.Rq[i1-1] + self.Rq[i1-2])
-        R1  = np.sqrt(Rq1)
-        iD  = 1.0/(Rq1-Rq0)
-        im  = (i1+i0)//2
-        Rqm = self.Rq[im] if (nB%2)==0 else 0.5 * (self.Rq[im] + self.Rq[im+1])
-        Rm  = np.sqrt(Rqm)
-        Q   = self.Rq[i0:i1]-Rqm                    # R²-Rm²
-        fac = np.where(Q<0,1/(Rq0-Rqm),1/(Rq1-Rqm)) # 1/(Re²-Rm²)
-        Q  *= fac                                   # Q=(R²-Rm²)/(Re²-Rm²)
+        i0,i1,R0,Rm,R1,iD,Q,fac = self.i0i1R0RmR1iDQfac(region)
+        H   = harmonic(self.Cph[i0:i1],self.Sph[i0:i1],m=0)
         if tophat:
             W,dW = 1.0,0.0
         else:
@@ -396,7 +423,7 @@ class FourierMethod:
         mdWt= mu*dW*self.dRq[i0:i1] if computeOmega else None    # μ dW/dt
         mdWx= mu*dW*(-2*Rm*Rm)      if computeAlpha else None    # μ dW/dlnR
         sR = pd.Series(data=(i0,i1,Rm), index=('i0','i1','R'))
-        v  = variance((nB*iD*mW/np.pi))
+        v  = variance(((i1-i0)*iD*mW/np.pi))
         s0 = pd.Series(data=(v.mean(0),v.std_of_mean(0)), index=('Sig','Sig_e'))
         ls = [sR,s0]
         for m in range(1,maxm+1):
@@ -418,14 +445,14 @@ class FourierMethod:
 
         Parameters:
         -----------
-        minNbin: int
+        minNBin: int
             minimum number of particles in radial bin
             Default: Default.minNBin
-        maxNbin: int
+        maxNBin: int
             maximum number of particles in radial bin
-            Default: Default.maxNbin
+            Default: Default.maxNBin
         maxDexBin: float
-            maximum size of radial bin in log10(R)
+            if NBin > minNBin: maximum size of radial bin in log10(R)
             Default: Default.maxDexBin
 
         Returns:
@@ -452,6 +479,11 @@ class FourierMethod:
         if maxDexBin > 0.2:
             raise Exception("maxDexBin="+str(maxDexBin)+" is too large")
         maxRqFac = 10**(2*maxDexBin)
+        if debug > 2:
+            print("FourierMethod.createBins():"+
+                  "\n  minNBin="+str(minNBin)+
+                  "\n  maxNBin="+str(maxNBin)+
+                  "\n  maxRqFac="+str(maxRqFac))
         # 1 create primary bins
         wl = nP - minNBin
         b1 = []
@@ -461,6 +493,12 @@ class FourierMethod:
             Rqm = maxRqFac * self.Rq[i0]
             im  = min(nP, i0 + maxNBin)
             i1 += np.searchsorted(self.Rq[i1:im], Rqm)
+            if debug > 4:
+                print("FourierMethod.createBins():"+
+                      " Rq[i0="+str(i0)+"]="+str(self.Rq[i0])+
+                      " Rqm="+str(Rqm)+
+                      " Rq[im="+str(im)+"]="+str(self.Rq[im])+
+                      " Rq[i1="+str(i1)+"]="+str(self.Rq[i1]))
             b1.append((i0,i1))
             i0 = i1
             i1 = i0 + minNBin
@@ -500,14 +538,14 @@ class FourierMethod:
             use a tophat window. A tophat window causes biased pattern
             speeds Ωm and cannot be used for computing the angles αm.
             Default: not (computeOmega or computeAlpha)
-        minNbin: int
+        minNBin: int
             minimum number of particles in radial bin
             Default: Default.minNBin
-        maxNbin: int
+        maxNBin: int
             maximum number of particles in radial bin
-            Default: Default.maxNbin
+            Default: Default.maxNBin
         maxDexBin: float
-            maximum size of radial bin in log10(R)
+            if NBin > minNBin: maximum size of radial bin in log10(R)
             Default: Default.maxDexBin
 
         Returns:
@@ -517,7 +555,8 @@ class FourierMethod:
         """
         if maxm < 2:
             raise Exception("maxm =",maxm,"< 2")
-        b = self.createBins(minNBin,maxNBin,maxDexBin)
+        b = self.createBins(minNBin=minNBin,maxNBin=maxNBin,
+                            maxDexBin=maxDexBin)
         a = self.analyseRegion(b[0],maxm=maxm,computeOmega=computeOmega,
                                computeAlpha=computeAlpha,tophat=tophat)
         d = pd.DataFrame(columns=a.index)
@@ -545,7 +584,7 @@ class FourierMethod:
                       maxm=None):
         """
         find bar region using a variation of the method described by Dehnen
-        et al (2023) in Appendix C. In particular, instead of A2, we use
+        et al, (2023, Appendix C). In particular, instead of A[m=2], we use
             S = rms{A[m=even]} - rms{A[m=odd]}
         as measure of bar strength.
 
@@ -563,7 +602,7 @@ class FourierMethod:
             require S ≥ minBarStrength in bar region
             Default: Default.minBarStrength
         maxDPsi: scalar
-            maximum angular width of bar [degrees]
+            maximum angular spread [degrees] of ψ[m=2] in bar region
             Default: Default.maxDPsi
         minDexBar: float
             minimum required length of bar in log10(R)
@@ -612,9 +651,12 @@ class FourierMethod:
         b0 = np.argmax(S)
         Rm = discAnalysis['R'][b0]
         if S[b0] < minMaxBarStrength:
+            warnings.warn("findBarRegion: "+
+                          "maximum bar strength < minMaxBarStrength = "
+                          +str(minMaxBarStrength)+": no bar identified")
             return 0,0,0.0
         # 2  set ψ = ψ2 - ψ2(maximum S) in [-π/2,π/2]
-        psi-= psi[b0]
+        psi = psi-psi[b0]
         psi = np.where(psi> 0.5*np.pi, psi-np.pi, \
               np.where(psi<-0.5*np.pi, psi+np.pi, psi))
         # 3  extend bar region of bins [b0,b1]
@@ -644,8 +686,15 @@ class FourierMethod:
         # 4  obtain bar region of indices [i0,i1] into sorted tables
         i0 = int(discAnalysis['i0'][b0])
         i1 = int(discAnalysis['i1'][b1])
-        if i1 < i0 + minNumBar or \
-            np.log10(self.Rq[i1]/self.Rq[i0]) < 2*minDexBar:
+        if i1 < i0 + minNumBar:
+            warnings.warn("findBarRegion: too few ("+str(i1-i0)+
+                          " < minNumBar = "+str(minNumBar)+
+                          ") particles in candidate bar region: "+
+                          "no bar identified")
+            return 0,0,0.0
+        if np.log10(self.Rq[i1]/self.Rq[i0]) < 2*minDexBar:
+            warnings.warn("findBarRegion: candidate bar region too short:"+
+                          " no bar identified")
             return 0,0,0.0
         return i0,i1,Rm
 
@@ -670,12 +719,12 @@ class FourierMethod:
             use a tophat window. A tophat window causes no bias for
             Fourier amplitude and phase, which are all we need here
             Default: True
-        minNbin: int
+        minNBin: int
             minimum number of particles in radial bin
             Default: Default.minNBin
-        maxNbin: int
+        maxNBin: int
             maximum number of particles in radial bin
-            Default: Default.maxNbin
+            Default: Default.maxNBin
         maxDexBin: float
             maximum size of radial bin in log10(R)
             Default: Default.maxDexBin
@@ -711,7 +760,7 @@ class FourierMethod:
                                   maxDPsi=maxDPsi,
                                   minDexBar=minDexBar,
                                   minNumBar=minNumBar)
-    
+
     def measureOmega(self, region, m=2):
         """ 
         compute ψ,Ω for given radial region
@@ -733,27 +782,9 @@ class FourierMethod:
         """
         if m < 1:
             raise Exception("m =",m,"< 1")
-        i0,i1 = self.unpackRegion(region)
-        nP  = len(self.Rq)
+        i0,i1,R0,Rm,R1,iD,Q,fac = self.i0i1R0RmR1iDQfac(region)
         nB  = i1-i0
         H   = harmonic(self.Cph[i0:i1],self.Sph[i0:i1],m=m)
-        Rq0 = 0.5*(  self.Rq[i0]   + self.Rq[i0-1])  if i0 > 0  else 0
-        R0  = np.sqrt(Rq0)
-        Rq1 = 0.5*(  self.Rq[i1-1] + self.Rq[i1]  )  if i1 < nP else \
-              0.5*(3*self.Rq[i1-1] + self.Rq[i1-2])
-        R1  = np.sqrt(Rq1)
-        iD  = 1.0/(Rq1-Rq0)
-        if len(region)>2:
-            Rm  = region[2]
-            Rqm = Rm*Rm
-        else:
-            im  = (i1+i0)//2
-            Rqm = self.Rq[im] if (nB%2)==0 else \
-                  0.5 * (self.Rq[im] + self.Rq[im+1])
-            Rm  = np.sqrt(Rqm)
-        Q   = self.Rq[i0:i1]-Rqm                    # R²-Rm²
-        fac = np.where(Q<0,1/(Rq0-Rqm),1/(Rq1-Rqm)) # 1/(Re²-Rm²)
-        Q  *= fac                                   # Q=(R²-Rm²)/(Re²-Rm²)
         W,dW= windowDeriv(Q)                        # W(Q), dW/dQ
         dW  = dW*fac                                # dW/dR²
         mu  = self.M[i0:i1]
@@ -771,7 +802,7 @@ class FourierMethod:
 
     @staticmethod
     def patternSpeed(x,y, vx, vy, mu=1.0, m=2, checkFiniteInput=False,
-                     maxm=Default.maxm, minNbin=Default.minNBin,
+                     maxm=Default.maxm, minNBin=Default.minNBin,
                      maxNBin=Default.maxNBin, maxDexBin=Default.maxDexBin,
                      minBarStrength=Default.minBarStrength,
                      minMaxBarStrength=Default.minMaxBarStrength,
@@ -805,12 +836,12 @@ class FourierMethod:
         maxm: int
             maximum azimuthal wavenumber used in Fourier analysis of disc
             Detault: Default.maxm
-        minNbin: int
+        minNBin: int
             minimum number of particles in radial bin
-            Default: Default.minNbin
-        maxNbin: int
+            Default: Default.minNBin
+        maxNBin: int
             maximum number of particles in radial bin
-            Default: Default.maxNbin
+            Default: Default.maxNBin
         maxDexBin: float
             maximum size of radial bin in log10(R)
             Default: Default.maxDexBin
