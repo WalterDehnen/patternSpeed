@@ -15,9 +15,10 @@
 @version   0.3    feb-2023 WD  general m; avoid empty last bin in createBins()
 @version   0.4    may-2023 WD  analyse m=1...maxm, using pandas, better bar find
 @version   0.4.1  jun-2023 WD  minor debug, improved error/warning
+@version   0.4.2  jul-2023 WD  removed unnecessary variance() in measureOmega
 
 """
-version = '0.4.1'
+version = '0.4.2'
 
 import numpy as np
 import pandas as pd
@@ -791,7 +792,6 @@ class FourierMethod:
         mW  = mu*W                                  # μ W
         mdWt= mu*dW*self.dRq[i0:i1]                 # μ dW/dt
         sR  = pd.Series(data=(R0,Rm,R1), index=('R0','Rm','R1'))
-        v   = variance((nB*iD*mW/np.pi))
         ApO,corr = self.analyseAux(H,self.dPh[i0:i1],iD,mW,mdWt,
                                    correlation=True)
         sM  = pd.Series(data=(ApO['ps'+str(m)],ApO['ps'+str(m)+'_e'],
