@@ -16,9 +16,11 @@
 @version   0.4    may-2023 WD  analyse m=1...maxm, using pandas, better bar find
 @version   0.4.1  jun-2023 WD  minor debug, improved error/warning
 @version   0.4.2  jul-2023 WD  removed unnecessary variance() in measureOmega
+@version   0.4.3  jul-2023 WD  very minor improved error messages
+@version   0.5    jul-2023 WD  support phase alignment, provide Fourier analysis
 
 """
-version = '0.4.2'
+version = '0.5'
 
 import numpy as np
 import pandas as pd
@@ -28,22 +30,22 @@ from variance import variance
 debug = 0
 
 def window(Q):
-    """compute W(Q) = 2(1-Q)²(1+2Q)"""
+    """ compute W(Q) = 2(1-Q)²(1+2Q) """
     Q1 = 1-Q
     return 2*Q1*Q1*(1+Q+Q)
 
 def windowDeriv(Q):
-    """compute W(Q) = 2(1-Q)²(1+2Q) and dW/dQ = -12 Q(1-Q)"""
+    """ compute W(Q) = 2(1-Q)²(1+2Q) and dW/dQ = -12 Q(1-Q) """
     Q1 = 1-Q
     return 2*Q1*Q1*(1+Q+Q), -12*Q*Q1
 
 def atan(sin,cos):
-    """arctan(sin/cos) in the range [0,2π]"""
+    """ arctan(sin/cos) in the range [0,2π] """
     psi = np.arctan2(sin,cos)
     return np.where(psi<0, psi+2*np.pi, psi)
 
 def asfarray(array, copy=False, checkFinite=False):
-    """obtain a new float array from input array"""
+    """ obtain a new float array from input array """
     arr = np.asfarray(array)             # ensure float data type
     if checkFinite:
         arr = np.asarray_chkfinite(arr)  # check for NaN or inf
@@ -54,22 +56,24 @@ def asfarray(array, copy=False, checkFinite=False):
 class harmonic:
     """ provide cosmφ, sinmφ at incrementable m
         attributes:
-            m       harmonic order
-            Cm,Sm   cosmφ, sinmφ    
+            m       int: harmonic order
+            Cm,Sm   arrays: cosmφ, sinmφ    
     """
     
     def increment(self, dm=1):
         """ increment m to m+dm """
+        if dm < 0:
+            raise RuntimeError("dm = "+str(dm)+" < 0")
         for k in range(dm):
-            self.Cm,self.Sm = self.Cm*self.C1-self.Sm*self.S1,\
-                              self.Sm*self.C1+self.Cm*self.S1
+            self.Cm,self.Sm = self.Cm*self.C1 - self.Sm*self.S1,\
+                              self.Sm*self.C1 + self.Cm*self.S1
             self.m += 1        
 
     def set_order(self, m):
         """ set m to the value given (must be ≥ m)"""
-        if m < self.m:
+        if   m < self.m:
             raise ValueError("m="+str(m)+" < current m="+str(self.m))
-        else:
+        elif m > self.m:
             self.increment(m-self.m)
         
     def __init__(self, C, S, m=0):
@@ -87,7 +91,7 @@ class harmonic:
             self.set_order(m)
             
 def convertFourier(x, m):
-    """ given   x={<1>, <cosmφ>, <sinmφ>,
+    """ given   x={ <1>, <cosmφ>, <sinmφ>,
                     [<∂cosmφ/∂t>, <∂sinmφ/∂t>],
                     [<∂cosmφ/∂X>, <∂sinmφ/∂X>] } and m
         compute y={Am=Σm/Σ0, ψm, [∂ψm/∂t], [∂ψm/∂X] } 
@@ -95,18 +99,18 @@ def convertFourier(x, m):
     K = (len(x)+1)//2
     y = np.zeros((K))
     J = np.zeros((K,len(x)))
-    Sigm    = np.hypot(x[1],x[2])           # Σm  = √(Cm²+Sm²)
-    iSigm   = np.reciprocal(Sigm)           # 1/Σm
-    iSig0   = np.reciprocal(x[0])           # 1/Σ0
-    y[0]    = Sigm * iSig0                  # Am = Σm/Σ0
-    J[0,0]  =-y[0] * iSig0                  # ∂Am/∂C0 = -Σm/Σ0² = -Am/Σ0
-    J[0,1]  = x[1] * iSigm * iSig0          # ∂Am/∂Cm = Cm/Σm/Σ0
-    J[0,2]  = x[2] * iSigm * iSig0          # ∂Am/∂Sm = Sm/Σm/Σ0
-    im      = 1/m
-    iQ      = iSigm * iSigm
-    y[1]    = im*atan(x[2],x[1])            # ψ     = 1/m atan(S/C)
-    J[1,1]  =-im*x[2]*iQ                    # ∂ψ/∂C =-S/Σm²/m
-    J[1,2]  = im*x[1]*iQ                    # ∂ψ/∂S = C/Σm²/m
+    Sigm   = np.hypot(x[1],x[2])           # Σm  = √(Cm²+Sm²)
+    iSigm  = np.reciprocal(Sigm)           # 1/Σm
+    iSig0  = np.reciprocal(x[0])           # 1/Σ0
+    y[0]   = Sigm * iSig0                  # Am = Σm/Σ0
+    J[0,0] =-y[0] * iSig0                  # ∂Am/∂C0 = -Σm/Σ0² = -Am/Σ0
+    J[0,1] = x[1] * iSigm * iSig0          # ∂Am/∂Cm = Cm/Σm/Σ0
+    J[0,2] = x[2] * iSigm * iSig0          # ∂Am/∂Sm = Sm/Σm/Σ0
+    im     = 1/m
+    iQ     = iSigm * iSigm
+    y[1]   = im*atan(x[2],x[1])            # ψ     = 1/m atan(S/C)
+    J[1,1] =-im*x[2]*iQ                    # ∂ψ/∂C =-S/Σm²/m
+    J[1,2] = im*x[1]*iQ                    # ∂ψ/∂S = C/Σm²/m
     for k in range(2,K):
         k2 = k+k
         k1 = k2-1
@@ -129,10 +133,9 @@ def convertAlpha(x):
     return y,J
 
 class FourierMethod:
-    """
-    Fourier method for measuring pattern speed, as described by
-    Dehnen et al. (2023, MNRAS, 518, 2712), though with improved
-    bar finding method.
+    """ Fourier method for measuring pattern speed, as described by
+        Dehnen et al. (2023, MNRAS, 518, 2712), though with improved
+        bar finding method.
 
     Methods
     -------
@@ -198,7 +201,6 @@ class FourierMethod:
     condition (2) are avoided when selecting particles on conserved quantities,
     such as stellar birth properties (time, location, metallicity) or a random
     sub-sample (selecting on id).
-
     """
     
     class Default:
@@ -233,7 +235,7 @@ class FourierMethod:
         minNumBar=100000
         
     def __init__(self, x,y, vx,vy, mu=1.0, checkFinite=False):
-        """step 0  create sorted data arrays
+        """ step 0  create sorted data arrays
 
         Input Data:
         -----------
@@ -257,7 +259,6 @@ class FourierMethod:
         -----------
         checkFinite: bool
             check input data for NaN or Inf
-
         """
         # 0  get input data to numpy arrays
         X = asfarray(x,checkFinite=checkFinite)
@@ -281,20 +282,19 @@ class FourierMethod:
         self.Sph = Y[i]/R
         
     def radius(self,i):
-        """radius for given index (or indices) into sorted tables"""
+        """ radius for given index (or indices) into sorted tables """
         return np.sqrt(self.Rq[i])
     
     def indexR(self,R):
-        """index i such that radius(i) ≤ R < radius(i+1) or 0 or N"""
+        """ index i such that radius(i) ≤ R < radius(i+1) or 0 or N """
         return min(len(self.Rq),max(0,np.searchsorted(self.Rq, R*R)))
 
     def numPart(self):
-        """number of particles loaded"""
+        """ number of particles loaded """
         return len(self.Rq)
 
     def unpackRegion(self, region):
-        """
-        unpack region into two integers i0 < i1 in range [0,nP)
+        """ unpack region into two integers i0 < i1 in range [0,nP)
 
         Parameter:
         region: tuple of int, tuple or floats, or 'all'
@@ -348,8 +348,7 @@ class FourierMethod:
         return i0,i1,R0,Rm,R1,iD,Q,fac
 
     def analyseAux(self,H,dPh,iD,mW,mdWt=None,mdWx=None,correlation=False):
-        """
-        auxiliary for analyseRegion() and measureOmega()
+        """ auxiliary for analyseRegion() and measureOmega()
         compute A,ψ[,Ω][,α] and their uncertainties for a set of particles
         """
         lst = [mW]                                   # μ W
@@ -379,9 +378,8 @@ class FourierMethod:
     
     def analyseRegion(self, region, maxm=Default.maxm,
                       computeOmega=False, computeAlpha=False, tophat=False):
-        """
-        compute A,ψ[,Ω][,α] and their uncertainties for m=1...maxm and 
-        particles in region
+        """ compute A,ψ[,Ω][,α] and their uncertainties for m=1...maxm and 
+            particles in region
 
         Parameters:
         -----------
@@ -436,8 +434,7 @@ class FourierMethod:
                    minNBin=Default.minNBin,
                    maxNBin=Default.maxNBin,
                    maxDexBin=Default.maxDexBin):
-        """
-        create radial bins
+        """ create radial bins
 
         Input data:
         -----------
@@ -520,9 +517,8 @@ class FourierMethod:
                     minNBin=Default.minNBin,
                     maxNBin=Default.maxNBin,
                     maxDexBin=Default.maxDexBin):
-        """
-        create radial bins and analyse each to find Σ and Am,ψm[,Ωm][,αm]
-        for m=1...maxm, including statistical uncertainties
+        """ create radial bins and analyse each to find Σ and Am,ψm[,Ωm][,αm]
+            for m=1...maxm, including statistical uncertainties
 
         Parameters:
         -----------
@@ -552,7 +548,7 @@ class FourierMethod:
         Returns:
         --------
         pandas.DataFrame with each row the result of analyseRegion() for bins
-        are returned by createBins()
+        as returned by createBins()
         """
         if maxm < 2:
             raise Exception("maxm =",maxm,"< 2")
@@ -568,26 +564,93 @@ class FourierMethod:
             d.loc[k] = a.to_numpy()
         return d
     
-    def maximumWaveNumber(self,discAnalysis):
-        """ auxiliary: find maximum m used in disc analysis """
+    @staticmethod
+    def maximumWaveNumber(discAnalysis):
+        """ auxiliary: find maximum m used in disc analysis
+        Input data:
+        discAnalysis: pandas.DataFrame
+            output from analyseDisc()
+        """
         names = discAnalysis.columns.to_list()
         m = 0
         while(names.count('A'+str(m+1))):
             m += 1
         return m
- 
-    def findBarRegion(self, discAnalysis,
+
+    @staticmethod
+    def barStrength(discAnalysis, maxm=None):
+        """" auxiliary: compute bar strength S=rms{A[m=even]} - rms{A[m=odd]}
+        Input data:
+        discAnalysis: pandas.DataFrame
+            output from analyseDisc()
+        """
+        if maxm is None:
+            maxm = FourierMethod.maximumWaveNumber(discAnalysis)
+        if maxm < 2:
+            raise Exception("require maxm ≥ 2 with analyseDisc()")
+        Am = discAnalysis[['A'+str(m) for m in range(1,maxm+1)]].to_numpy()
+        Ae = Am[:,1::2]
+        Ao = Am[:,0::2]
+        S  = np.sqrt((Ae*Ae).sum(axis=1)) - np.sqrt((Ao*Ao).sum(axis=1))
+        return S
+        
+    @staticmethod
+    def alignPhase(psi, m, i0=0, out=None):
+        """" auxiliary: align phases radially
+        Input data:
+        -----------
+        psi: 1D array of float
+            phases ψm of radial bins in bin order
+        m:   int
+            azimuthal wavenumber m
+        i0:  int
+            index used to align to, i.e. psi[i0] is preserved
+        out: numpy.ndarray, optional
+            Alternative output array in which to place the result. It must
+            have the same shape as the expected output
+            
+        Return:
+        -------
+        psi: 1D array of float
+            phases aligned by adding integer multiples of 2π/m such that the
+            difference δψ between adjacent bins remains in the range [-π/m,+π/m]
+        """
+        if out is None:
+            out = np.empty_like(psi)            
+        elif out.shape != psi.shape:
+            raise Exception("out.shape="+str(out.shape)+
+                            " ≠ psi.shape="+str(psi.shape))
+        half = np.pi/m
+        full = half+half
+        dpsi = psi[1:] - psi[0:-1]
+        dpsi = np.where(dpsi> half, dpsi-full, \
+               np.where(dpsi<-half, dpsi+full, dpsi))
+        np.cumsum(dpsi,out=out[1:])
+        out[0] = 0
+        out += psi[i0] - out[i0]
+        return out
+
+    @staticmethod
+    def alignPhases(discAnalysis, i0=0):
+        """ align the phases in discAnalysis """
+        maxm = FourierMethod.maximumWaveNumber(discAnalysis)
+        for m in range(1,maxm+1):
+            label = 'ps'+str(m)
+            discAnalysis[label] = FourierMethod.alignPhase(
+                discAnalysis[label].to_numpy(),m,i0)
+        return discAnalysis
+
+    def findBarRegion(self, discAnalysis, alignPhases=False,
                       minBarStrength=Default.minBarStrength,
                       minMaxBarStrength=Default.minMaxBarStrength,
                       maxDPsi=Default.maxDPsi,
                       minDexBar=Default.minDexBar,
                       minNumBar=Default.minNumBar,
                       maxm=None):
-        """
-        find bar region using a variation of the method described by Dehnen
-        et al, (2023, Appendix C). In particular, instead of A[m=2], we use
-            S = rms{A[m=even]} - rms{A[m=odd]}
-        as measure of bar strength.
+        """ find bar region using a variation of the method described by Dehnen
+            et al, (2023, Appendix C). In particular, instead of A[m=2], we use
+                S = rms{A[m=even]} - rms{A[m=odd]}
+            as measure of bar strength.
 
         Input data:
         -----------
@@ -596,6 +659,9 @@ class FourierMethod:
 
         Parameters:
         -----------
+        alignPhases: bool
+            align the phases discAnalysis (after return), suitable for plotting
+            Default: False
         minMaxBarStrength: float
             require max{S} ≥ minMaxBarStrength for bar
             Default: Default.minMaxBarStrength
@@ -629,38 +695,33 @@ class FourierMethod:
         if not (type(maxDPsi) is float or type(maxDPsi) is int):
             raise Exception("maxDPsi must be float")
         if maxDPsi < 2:
-            raise Exception("maxDPsi"+str(maxDPsi)+" is too small")
+            raise Exception("maxDPsi = "+str(maxDPsi)+" is too small")
         if maxDPsi > 20:
-            raise Exception("maxDPsi"+str(maxDPsi)+" is too large")
+            raise Exception("maxDPsi = "+str(maxDPsi)+" is too large")
         if minNumBar < 1000:
-            text = "minNumBar"+str(minNumBar)+\
+            text = "minNumBar = "+str(minNumBar)+\
                 " is too small -- will use 1000 instead"
             warning.warn(text)
             minNumBar = 1000
         maxDPsi = maxDPsi * np.pi / 180.0
-        if maxm is None:
-            maxm = self.maximumWaveNumber(discAnalysis)
-        if maxm < 2:
-            raise Exception("require maxm ≥ 2 with analyseDisc()")
-        # 0  obtain m=2 phase and bar strength
-        psi = discAnalysis['ps2']
-        Am = discAnalysis[['A'+str(m) for m in range(1,maxm+1)]].to_numpy()
-        Ae = Am[:,1::2]
-        Ao = Am[:,0::2]
-        S  = np.sqrt((Ae*Ae).sum(axis=1)) - np.sqrt((Ao*Ao).sum(axis=1))
-        # 1  find maximum bar strength
-        b0 = np.argmax(S)
+        # 0  obtain bar strength
+        S   = self.barStrength(discAnalysis,maxm)
+        b0  = np.argmax(S)
+        # 1  optionally align all phases
+        if alignPhases:
+            self.alignPhases(discAnalysis,i0=b0)
+        # 2  find maximum bar strength
         Rm = discAnalysis['R'][b0]
         if S[b0] < minMaxBarStrength:
             warnings.warn("findBarRegion: "+
-                          "maximum bar strength < minMaxBarStrength = "
+                          "maximum bar strength ="+str(S[b0])+
+                          " (@ R="+str(discAnalysis['R'][b0])+
+                          ") < minMaxBarStrength = "
                           +str(minMaxBarStrength)+": no bar identified")
             return 0,0,0.0
-        # 2  set ψ = ψ2 - ψ2(maximum S) in [-π/2,π/2]
-        psi = psi-psi[b0]
-        psi = np.where(psi> 0.5*np.pi, psi-np.pi, \
-              np.where(psi<-0.5*np.pi, psi+np.pi, psi))
-        # 3  extend bar region of bins [b0,b1]
+        # 3  set ψ = ψ2 - ψ2(maximum S) aligned
+        psi = self.alignPhase(discAnalysis['ps2'].to_numpy(),m=2,i0=b0)
+        # 4  extend bar region of bins [b0,b1]
         nB = len(psi)
         b1 = b0
         psimin = psi[b0]
@@ -684,7 +745,7 @@ class FourierMethod:
                     if b1+1<nB and S[b1+1]>minBarStrength else 2
                 psimin = min(psi[b1],psimin)
                 psimax = max(psi[b1],psimax)
-        # 4  obtain bar region of indices [i0,i1] into sorted tables
+        # 5  obtain bar region of indices [i0,i1] into sorted tables
         i0 = int(discAnalysis['i0'][b0])
         i1 = int(discAnalysis['i1'][b1])
         if i1 < i0 + minNumBar:
@@ -699,73 +760,9 @@ class FourierMethod:
             return 0,0,0.0
         return i0,i1,Rm
 
-    def findBar(self, maxm=Default.maxm, tophat=True,
-                minNBin=Default.minNBin,
-                maxNBin=Default.maxNBin,
-                maxDexBin=Default.maxDexBin,
-                minBarStrength=Default.minBarStrength,
-                minMaxBarStrength=Default.minMaxBarStrength,
-                maxDPsi=Default.maxDPsi,
-                minDexBar=Default.minDexBar,
-                minNumBar=Default.minNumBar):
-        """
-        combines analyseDisc() and findBarRegion()
-
-        Parameters:
-        -----------
-        maxm: int
-            maximum azimuthal wavenumber m
-            Default: Default.maxm
-        tophat: bool
-            use a tophat window. A tophat window causes no bias for
-            Fourier amplitude and phase, which are all we need here
-            Default: True
-        minNBin: int
-            minimum number of particles in radial bin
-            Default: Default.minNBin
-        maxNBin: int
-            maximum number of particles in radial bin
-            Default: Default.maxNBin
-        maxDexBin: float
-            maximum size of radial bin in log10(R)
-            Default: Default.maxDexBin
-        minMaxBarStrength: float
-            require max{S} ≥ minMaxBarStrength for bar
-            Default: Default.minMaxBarStrength
-        minBarStrength: float
-            require S ≥ minBarStrength in bar region
-            Default: Default.minBarStrength
-        maxDPsi: scalar
-            maximum angular width of bar [degrees]
-            Default: Default.maxDPsi
-        minDexBar: float
-            minimum required length of bar in log10(R)
-            Default: Default.minDexBar
-        minNumBar: int
-            minimum required number of particles in bar region
-            Default: Default.minNumBar
-
-        Returns: i0,i1,Rm
-        -----------------
-            i0,i1: indices into sorted data arrays for bar region
-            Rm:    radius at which S is maximal
-        """
-
-        return self.findBarRegion(self.analyseDisc(maxm=maxm, tophat=tophat,
-                                                   minNBin=minNBin,
-                                                   maxNBin=maxNBin,
-                                                   maxDexBin=maxDexBin),
-                                  maxm=maxm,
-                                  minBarStrength=minBarStrength,
-                                  minMaxBarStrength=minMaxBarStrength,
-                                  maxDPsi=maxDPsi,
-                                  minDexBar=minDexBar,
-                                  minNumBar=minNumBar)
-
     def measureOmega(self, region, m=2):
-        """ 
-        compute ψ,Ω for given radial region
-        
+        """ compute ψ,Ω for given radial region
+
         Parameters:
         -----------
         region: iterable with two or three entries: (i0,i1[,Rm]) or (R0,R1[,Rm])
@@ -776,9 +773,9 @@ class FourierMethod:
         m: int
             azimuthal wave number for which to measure ψ,Ω
             Default: 2
-    
-        Return:
-        pandas.Series holding R0,Rm,R1,ψ,Ω,ψ_e,Ω_e,corr(ψ,Ω)
+
+        Returns:
+            pandas.Series holding R0,Rm,R1,ψ,Ω,ψ_e,Ω_e,corr(ψ,Ω)
         
         """
         if m < 1:
@@ -798,8 +795,8 @@ class FourierMethod:
                               ApO['Om'+str(m)],ApO['Om'+str(m)+'_e'],
                               corr[1,2]),
                         index=('psi','psi_e','Om','Om_e','corr'))
-        return pd.concat((sR,sM))
-
+        return pd.concat((sR,sM))        
+        
     @staticmethod
     def patternSpeed(x,y, vx, vy, mu=1.0, m=2, checkFiniteInput=False,
                      maxm=Default.maxm, minNBin=Default.minNBin,
@@ -808,10 +805,10 @@ class FourierMethod:
                      minMaxBarStrength=Default.minMaxBarStrength,
                      maxDPsi=Default.maxDPsi, minDexBar=Default.minDexBar,
                      minNumBar=Default.minNumBar, tophatFourier=True):
-        """
-        improved Dehnen et al. (2023) Fourier method for measurng pattern
-        speed in one go (discarding any intermediate results, such as the
-        Fourier analysis in radial bins)
+        """ combines everything
+            improved Dehnen et al. (2023) Fourier method for measurng pattern
+            speed in one go (discarding any intermediate results, such as the
+            Fourier analysis in radial bins)
 
         Input Data:
         -----------
@@ -825,7 +822,7 @@ class FourierMethod:
             centred y velocities
         mu : float or 1D numpy array
             particle mass(es)
-    
+
         Parameters:
         -----------
         m: int
@@ -866,17 +863,22 @@ class FourierMethod:
             analysis in radial bins. This is recommended and causes no bias.
             Default: True
 
-        Returns:
-            pandas.Series holding R0,R1,Rm,ψ,Ω,ψ_e,Ω_e,corr(ψ,Ω)
+        Returns: disc, pattern
+        disc: pandas.dataFrame holding Fourier analysis with phases aligned
+        pattern: pandas.Series holding R0,R1,Rm,ψ,Ω,ψ_e,Ω_e,corr(ψ,Ω)
             if a bar can be found
         """
         tool = FourierMethod(x,y,vx,vy,mu,checkFinite=checkFiniteInput)
-        bar  = tool.findBar(maxm=maxm, tophat=tophatFourier,
-                            minNBin=minNBin, maxNBin=maxNBin,
-                            maxDexBin=maxDexBin, minBarStrength=minBarStrength,
-                            minMaxBarStrength=minMaxBarStrength,
-                            maxDPsi=maxDPsi, minDexBar=minDexBar,
-                            minNumBar=minNumBar)
+        disc = tool.analyseDisc(maxm=maxm, tophat=tophatFourier,
+                                minNBin=minNBin, maxNBin=maxNBin,
+                                maxDexBin=maxDexBin)
+        bar  = tool.findBarRegion(disc,alignPhases=True,
+                                  minBarStrength=minBarStrength,
+                                  minMaxBarStrength=minMaxBarStrength,
+                                  maxDPsi=maxDPsi, minDexBar=minDexBar,
+                                  minNumBar=minNumBar)
         if bar[0] < bar[1]:
-            return tool.measureOmega(bar,m=m)
+            return tool.measureOmega(bar,m=m), disc
+        else:
+            return None, disc
 
