@@ -932,10 +932,10 @@ class FourierMethod:
             analysis in radial bins. This is recommended and causes no bias.
             Default: True
 
-        Returns: disc, pattern
-        disc: pandas.dataFrame holding Fourier analysis with phases aligned
+        Returns: pattern, disc
         pattern: pandas.Series holding R0,R1,Rm,ψ,Ω,ψ_e,Ω_e,corr(ψ,Ω)
             if a bar can be found
+        disc: pandas.dataFrame holding Fourier analysis with phases aligned
         """
         tool = FourierMethod(x,y,vx,vy,mu,checkFinite=checkFiniteInput)
         disc = tool.analyseDisc(maxm=maxm, tophat=tophatFourier,
