@@ -19,7 +19,7 @@
 @version   0.4.3  jul-2023 WD  very minor improved error messages
 @version   0.5    jul-2023 WD  support phase alignment, provide Fourier analysis
 @version   0.5.1  jul-2023 WD  maxRBarMedian, changed some Default values
-@version   0.5.2  jul-2023 WD  maxFracBin
+@version   0.5.2  jul-2023 WD  binOverlapDepth
 
 """
 version = '0.5.2'
@@ -211,8 +211,8 @@ class FourierMethod:
             maximum azimuthal wavenumber m
         minNBin: 2000
             minimum number of particles in a radial bin
-        maxFracBin: 0.01
-            maximum fraction of particles in a radial bin
+        maxNBin: 32000
+            maximum number of particles in a radial bin
         maxDexBin: 0.1
             if NBin > minNBin: maximum extent of radial bin in log10(R)
         binOverlapDepth: 1
@@ -233,8 +233,8 @@ class FourierMethod:
         """
         maxm=6
         minNBin=4000
-        maxFracBin=0.02
-        maxDexBin=0.1
+        maxNBin=32000
+        maxDexBin=0.05
         binOverlapDepth=1
         maxRBarMedian=2.4
         minBarStrength=0.025
@@ -455,7 +455,7 @@ class FourierMethod:
     
     def createBins(self,
                    minNBin=Default.minNBin,
-                   maxFracBin=Default.maxFracBin,
+                   maxNBin=Default.maxNBin,
                    maxDexBin=Default.maxDexBin,
                    binOverlapDepth=Default.binOverlapDepth):
         """ create radial bins
@@ -470,9 +470,9 @@ class FourierMethod:
         minNBin: int
             minimum number of particles in a radial bin
             Default: Default.minNBin
-        maxFracBin: float
-            maximum fraction of particles in a radial bin
-            Default: Default.maxFracBin
+        maxNBin: int
+            maximum number of particles in a radial bin
+            Default: Default.maxNBin
         maxDexBin: float
             if NBin > minNBin: maximum size of radial bin in log10(R)
             Default: Default.maxDexBin
@@ -494,17 +494,10 @@ class FourierMethod:
             raise Exception("minNBin="+str(minNBin)+" is too small")
         if minNBin > nP:
             raise Exception("minNBin="+str(minNBin)+" > numPart="+str(nP))
-        if not type(maxFracBin) is float:
-            raise Exception("maxFracBin must be float")
-        if maxFracBin <= 0.0:
-            raise Exception("maxFracBin = "+str(maxFracBin)+" ≤ 0")
-        maxNBin = int(maxFracBin * len(self.Rq))
+        if not type(maxNBin) is int:
+            raise Exception("maxNBin must be int")
         if minNBin > maxNBin:
-            raise Exception("N = "+str(len(self.Rq))+" < minNbin/maxFracBin = "+
-                            str(minNBin)+'/'+str(maxFracBin)+" = "+
-                            str(int(minNbin/maxFracBin))+": reduce minNbin "+
-                            "or increase maxFracBin to accomodate this "+
-                            "few particles")
+            raise Exception("minNBin="+str(minNBin)+" > maxNBin="+str(maxNBin))
         if not (type(maxDexBin) is float or type(maxDexBin) is int):
             raise Exception("maxDexBin must be scalar")
         if maxDexBin <= 0.0:
@@ -551,7 +544,7 @@ class FourierMethod:
     def analyseDisc(self, maxm=Default.maxm,
                     computeOmega=False,computeAlpha=False, tophat=None,
                     minNBin=Default.minNBin,
-                    maxFracBin=Default.maxFracBin,
+                    maxNBin=Default.maxNBin,
                     maxDexBin=Default.maxDexBin,
                     binOverlapDepth=Default.binOverlapDepth):
         """ create radial bins and analyse each to find Σ and Am,ψm[,Ωm][,αm]
@@ -575,9 +568,9 @@ class FourierMethod:
         minNBin: int
             minimum number of particles in radial bin
             Default: Default.minNBin
-        maxFracBin: float
-            maximum fraction of particles in a radial bin
-            Default: Default.maxFracBin
+        maxNBin: int
+            maximum number of particles in a radial bin
+            Default: Default.maxNBin
         maxDexBin: float
             if NBin > minNBin: maximum size of radial bin in log10(R)
             Default: Default.maxDexBin
@@ -593,7 +586,7 @@ class FourierMethod:
         """
         if maxm < 2:
             raise Exception("maxm =",maxm,"< 2")
-        b = self.createBins(minNBin=minNBin,maxFracBin=maxFracBin,
+        b = self.createBins(minNBin=minNBin,maxNBin=maxNBin,
                             maxDexBin=maxDexBin,binOverlapDepth=binOverlapDepth)
         a = self.analyseRegion(b[0],maxm=maxm,computeOmega=computeOmega,
                                computeAlpha=computeAlpha,tophat=tophat)
@@ -866,7 +859,7 @@ class FourierMethod:
     @staticmethod
     def patternSpeed(x,y, vx, vy, mu=1.0, m=2, checkFiniteInput=False,
                      maxm=Default.maxm, minNBin=Default.minNBin,
-                     maxFracBin=Default.maxFracBin, maxDexBin=Default.maxDexBin,
+                     maxNBin=Default.maxNBin, maxDexBin=Default.maxDexBin,
                      binOverlapDepth=Default.binOverlapDepth,
                      maxRBarMedian=Default.maxRBarMedian,
                      minBarStrength=Default.minBarStrength,
@@ -905,9 +898,9 @@ class FourierMethod:
         minNBin: int
             minimum number of particles in radial bin
             Default: Default.minNBin
-        maxFracBin: float
-            maximum fraction of particles in a radial bin
-            Default: Default.maxFracBin
+        maxNBin: int
+            maximum number of particles in a radial bin
+            Default: Default.maxNBin
         maxDexBin: float
             maximum size of radial bin in log10(R)
             Default: Default.maxDexBin
@@ -945,7 +938,7 @@ class FourierMethod:
         """
         tool = FourierMethod(x,y,vx,vy,mu,checkFinite=checkFiniteInput)
         disc = tool.analyseDisc(maxm=maxm, tophat=tophatFourier,
-                                minNBin=minNBin, maxFracBin=maxFracBin,
+                                minNBin=minNBin, maxNBin=maxNBin,
                                 maxDexBin=maxDexBin,
                                 binOverlapDepth=binOverlapDepth)
         bar  = tool.findBarRegion(disc,alignPhases=True,
