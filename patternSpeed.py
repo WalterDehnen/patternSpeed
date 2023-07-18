@@ -19,10 +19,11 @@
 @version   0.4.3  jul-2023 WD  very minor improved error messages
 @version   0.5    jul-2023 WD  support phase alignment, provide Fourier analysis
 @version   0.5.1  jul-2023 WD  maxRBarMedian, changed some Default values
-@version   0.5.2  jul-2023 WD  binOverlapDepth
+@version   0.5.2  jul-2023 WD  maxFracBin, binOverlapDepth
+@version   0.5.3  jul-2023 WD  maxFracBin --> maxNBin (reverting)
 
 """
-version = '0.5.2'
+version = '0.5.3'
 
 import numpy as np
 import pandas as pd
