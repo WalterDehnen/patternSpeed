@@ -19,9 +19,10 @@
 @version   0.4.3  jul-2023 WD  very minor improved error messages
 @version   0.5    jul-2023 WD  support phase alignment, provide Fourier analysis
 @version   0.5.1  jul-2023 WD  maxRBarMedian, changed some Default values
+@version   0.5.2  jul-2023 WD  maxFracBin
 
 """
-version = '0.5.1'
+version = '0.5.2'
 
 import numpy as np
 import pandas as pd
@@ -208,12 +209,15 @@ class FourierMethod:
         """ holds default parameters
         maxm: 6
             maximum azimuthal wavenumber m
-        minNBin: 4000
-            minimum number of particles in radial bin
-        maxNBin: 32000
-            maximum number of particles in radial bin
+        minNBin: 2000
+            minimum number of particles in a radial bin
+        maxFracBin: 0.01
+            maximum fraction of particles in a radial bin
         maxDexBin: 0.1
             if NBin > minNBin: maximum extent of radial bin in log10(R)
+        binOverlapDepth: 1
+            create this many levels of intermittent bins, giving a total of
+            2**binOverlapDepth * (NprimaryBins + 1) - 1  bins
         maxRbarMedian: 2.4
             search for maximum bar strength at R < maxRbarMedian * median(R)
         minMaxBarStrength: 0.1
@@ -229,8 +233,9 @@ class FourierMethod:
         """
         maxm=6
         minNBin=4000
-        maxNBin=32000
+        maxFracBin=0.02
         maxDexBin=0.1
+        binOverlapDepth=1
         maxRBarMedian=2.4
         minBarStrength=0.025
         minMaxBarStrength=0.1
@@ -450,8 +455,9 @@ class FourierMethod:
     
     def createBins(self,
                    minNBin=Default.minNBin,
-                   maxNBin=Default.maxNBin,
-                   maxDexBin=Default.maxDexBin):
+                   maxFracBin=Default.maxFracBin,
+                   maxDexBin=Default.maxDexBin,
+                   binOverlapDepth=Default.binOverlapDepth):
         """ create radial bins
 
         Input data:
@@ -462,14 +468,18 @@ class FourierMethod:
         Parameters:
         -----------
         minNBin: int
-            minimum number of particles in radial bin
+            minimum number of particles in a radial bin
             Default: Default.minNBin
-        maxNBin: int
-            maximum number of particles in radial bin
-            Default: Default.maxNBin
+        maxFracBin: float
+            maximum fraction of particles in a radial bin
+            Default: Default.maxFracBin
         maxDexBin: float
             if NBin > minNBin: maximum size of radial bin in log10(R)
             Default: Default.maxDexBin
+        binOverlapDepth: int
+            create this many levels of intermittent bins, giving a total of
+            2**binOverlapDepth * (NprimaryBins + 1) - 1  bins
+            Default: Default.overlapDepth
 
         Returns:
         --------
@@ -484,10 +494,17 @@ class FourierMethod:
             raise Exception("minNBin="+str(minNBin)+" is too small")
         if minNBin > nP:
             raise Exception("minNBin="+str(minNBin)+" > numPart="+str(nP))
-        if not type(maxNBin) is int:
-            raise Exception("maxNBin must be int")
+        if not type(maxFracBin) is float:
+            raise Exception("maxFracBin must be float")
+        if maxFracBin <= 0.0:
+            raise Exception("maxFracBin = "+str(maxFracBin)+" ≤ 0")
+        maxNBin = int(maxFracBin * len(self.Rq))
         if minNBin > maxNBin:
-            raise Exception("maxNBin="+str(maxNBin)+" < minNBin="+str(minNBin))
+            raise Exception("N = "+str(len(self.Rq))+" < minNbin/maxFracBin = "+
+                            str(minNBin)+'/'+str(maxFracBin)+" = "+
+                            str(int(minNbin/maxFracBin))+": reduce minNbin "+
+                            "or increase maxFracBin to accomodate this "+
+                            "few particles")
         if not (type(maxDexBin) is float or type(maxDexBin) is int):
             raise Exception("maxDexBin must be scalar")
         if maxDexBin <= 0.0:
@@ -502,7 +519,7 @@ class FourierMethod:
                   "\n  maxRqFac="+str(maxRqFac))
         # 1 create primary bins
         wl = nP - minNBin
-        b1 = []
+        bn = []
         i0 = 0
         i1 = minNBin
         while i1 < wl:
@@ -515,26 +532,28 @@ class FourierMethod:
                       " Rqm="+str(Rqm)+
                       " Rq[im="+str(im)+"]="+str(self.Rq[im])+
                       " Rq[i1="+str(i1)+"]="+str(self.Rq[i1]))
-            b1.append((i0,i1))
+            bn.append((i0,i1))
             i0 = i1
             i1 = i0 + minNBin
         if i0 < nP:
-            b1.append((i0,nP))
-        # 2 create intermittent bins
-        i0 = (b1[0][0] + b1[0][1])//2
-        bins = [b1[0]]
-        for b in b1[1:]:
-            i1 = (b[0] + b[1])//2
-            bins.append((i0,i1))
-            bins.append(b)
-            i0 = i1
-        return bins
+            bn.append((i0,nP))
+        # 2 create binOverlapDepth levels of intermittent bins
+        for level in range(binOverlapDepth):
+            bi = [bn[0]]
+            for k in range(1,len(bn)):
+                i0 = (bn[k-1][0] + bn[k][0])//2
+                i1 = (bn[k-1][1] + bn[k][1])//2
+                bi.append((i0,i1))
+                bi.append(bn[k])
+            bn = bi
+        return bn
 
     def analyseDisc(self, maxm=Default.maxm,
                     computeOmega=False,computeAlpha=False, tophat=None,
                     minNBin=Default.minNBin,
-                    maxNBin=Default.maxNBin,
-                    maxDexBin=Default.maxDexBin):
+                    maxFracBin=Default.maxFracBin,
+                    maxDexBin=Default.maxDexBin,
+                    binOverlapDepth=Default.binOverlapDepth):
         """ create radial bins and analyse each to find Σ and Am,ψm[,Ωm][,αm]
             for m=1...maxm, including statistical uncertainties
 
@@ -556,12 +575,16 @@ class FourierMethod:
         minNBin: int
             minimum number of particles in radial bin
             Default: Default.minNBin
-        maxNBin: int
-            maximum number of particles in radial bin
-            Default: Default.maxNBin
+        maxFracBin: float
+            maximum fraction of particles in a radial bin
+            Default: Default.maxFracBin
         maxDexBin: float
             if NBin > minNBin: maximum size of radial bin in log10(R)
             Default: Default.maxDexBin
+        binOverlapDepth: int
+            create this many levels of intermittent bins, giving a total of
+            2**binOverlapDepth * (NprimaryBins + 1) - 1  bins
+            Default: Default.overlapDepth
 
         Returns:
         --------
@@ -570,8 +593,8 @@ class FourierMethod:
         """
         if maxm < 2:
             raise Exception("maxm =",maxm,"< 2")
-        b = self.createBins(minNBin=minNBin,maxNBin=maxNBin,
-                            maxDexBin=maxDexBin)
+        b = self.createBins(minNBin=minNBin,maxFracBin=maxFracBin,
+                            maxDexBin=maxDexBin,binOverlapDepth=binOverlapDepth)
         a = self.analyseRegion(b[0],maxm=maxm,computeOmega=computeOmega,
                                computeAlpha=computeAlpha,tophat=tophat)
         d = pd.DataFrame(columns=a.index)
@@ -843,7 +866,8 @@ class FourierMethod:
     @staticmethod
     def patternSpeed(x,y, vx, vy, mu=1.0, m=2, checkFiniteInput=False,
                      maxm=Default.maxm, minNBin=Default.minNBin,
-                     maxNBin=Default.maxNBin, maxDexBin=Default.maxDexBin,
+                     maxFracBin=Default.maxFracBin, maxDexBin=Default.maxDexBin,
+                     binOverlapDepth=Default.binOverlapDepth,
                      maxRBarMedian=Default.maxRBarMedian,
                      minBarStrength=Default.minBarStrength,
                      minMaxBarStrength=Default.minMaxBarStrength,
@@ -881,12 +905,16 @@ class FourierMethod:
         minNBin: int
             minimum number of particles in radial bin
             Default: Default.minNBin
-        maxNBin: int
-            maximum number of particles in radial bin
-            Default: Default.maxNBin
+        maxFracBin: float
+            maximum fraction of particles in a radial bin
+            Default: Default.maxFracBin
         maxDexBin: float
             maximum size of radial bin in log10(R)
             Default: Default.maxDexBin
+        binOverlapDepth: int
+            create this many levels of intermittent bins, giving a total of
+            2**binOverlapDepth * (NprimaryBins + 1) - 1  bins
+            Default: Default.overlapDepth
         maxRBarMedian: float
             search for maximum bar strength at R < maxRBarMedian * median(R)
             Default: Default.maxRBarMedian
@@ -917,8 +945,9 @@ class FourierMethod:
         """
         tool = FourierMethod(x,y,vx,vy,mu,checkFinite=checkFiniteInput)
         disc = tool.analyseDisc(maxm=maxm, tophat=tophatFourier,
-                                minNBin=minNBin, maxNBin=maxNBin,
-                                maxDexBin=maxDexBin)
+                                minNBin=minNBin, maxFracBin=maxFracBin,
+                                maxDexBin=maxDexBin,
+                                binOverlapDepth=binOverlapDepth)
         bar  = tool.findBarRegion(disc,alignPhases=True,
                                   maxRBarMedian=maxRBarMedian,
                                   minBarStrength=minBarStrength,
