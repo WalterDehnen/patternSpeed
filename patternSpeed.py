@@ -18,9 +18,10 @@
 @version   0.4.2  jul-2023 WD  removed unnecessary variance() in measureOmega
 @version   0.4.3  jul-2023 WD  very minor improved error messages
 @version   0.5    jul-2023 WD  support phase alignment, provide Fourier analysis
+@version   0.5.1  jul-2023 WD  maxRBarMedian, changed some Default values
 
 """
-version = '0.5'
+version = '0.5.1'
 
 import numpy as np
 import pandas as pd
@@ -205,7 +206,7 @@ class FourierMethod:
     
     class Default:
         """ holds default parameters
-        maxm: 8
+        maxm: 6
             maximum azimuthal wavenumber m
         minNBin: 4000
             minimum number of particles in radial bin
@@ -213,26 +214,29 @@ class FourierMethod:
             maximum number of particles in radial bin
         maxDexBin: 0.1
             if NBin > minNBin: maximum extent of radial bin in log10(R)
-        minMaxBarStrength: 0.2
+        maxRbarMedian: 2.4
+            search for maximum bar strength at R < maxRbarMedian * median(R)
+        minMaxBarStrength: 0.1
             require max{bar strength} > minMaxBarStrength for bar
-        minBarStrength: 0.05
+        minBarStrength: 0.025
             requite bar strength > minBarStrength in bar region
         maxDPsi: 10
             maximum spread [degrees] of ψ[m=2] in bar region
         minDexBar: 0.2
             minimum required extent of bar region in log10(R)
-        minNumBar: 100000
+        minNumBar: 50000
             minimum required number of particles in bar region
         """
-        maxm=8
+        maxm=6
         minNBin=4000
         maxNBin=32000
         maxDexBin=0.1
-        minBarStrength=0.05
-        minMaxBarStrength=0.2
+        maxRBarMedian=2.4
+        minBarStrength=0.025
+        minMaxBarStrength=0.1
         maxDPsi=10.0
         minDexBar=0.2
-        minNumBar=100000
+        minNumBar=50000
         
     def __init__(self, x,y, vx,vy, mu=1.0, checkFinite=False):
         """ step 0  create sorted data arrays
@@ -284,14 +288,28 @@ class FourierMethod:
     def radius(self,i):
         """ radius for given index (or indices) into sorted tables """
         return np.sqrt(self.Rq[i])
-    
+
     def indexR(self,R):
         """ index i such that radius(i) ≤ R < radius(i+1) or 0 or N """
-        return min(len(self.Rq),max(0,np.searchsorted(self.Rq, R*R)))
+        return self.indexRq(R*R)
 
     def numPart(self):
         """ number of particles loaded """
         return len(self.Rq)
+
+    def medianR(self):
+        """ median radius """
+        return np.sqrt(self.medianRq())
+
+    def medianRq(self):
+        """ median radius² """
+        nP = len(self.Rq)
+        n2 = nP//2
+        return 0.5*(self.Rq[n2]+self.Rq[nP-n2])
+    
+    def indexRq(self,Rq):
+        """ index i such that self.Rq[i] ≤  Rq < self.Rq[i+1] or 0 or N """
+        return min(len(self.Rq),max(0,np.searchsorted(self.Rq, Rq)))
 
     def unpackRegion(self, region):
         """ unpack region into two integers i0 < i1 in range [0,nP)
@@ -477,8 +495,8 @@ class FourierMethod:
         if maxDexBin > 0.2:
             raise Exception("maxDexBin="+str(maxDexBin)+" is too large")
         maxRqFac = 10**(2*maxDexBin)
-        if debug > 2:
-            print("FourierMethod.createBins():"+
+        if debug > 1:
+            print("DebugInfo: FourierMethod.createBins():"+
                   "\n  minNBin="+str(minNBin)+
                   "\n  maxNBin="+str(maxNBin)+
                   "\n  maxRqFac="+str(maxRqFac))
@@ -491,8 +509,8 @@ class FourierMethod:
             Rqm = maxRqFac * self.Rq[i0]
             im  = min(nP, i0 + maxNBin)
             i1 += np.searchsorted(self.Rq[i1:im], Rqm)
-            if debug > 4:
-                print("FourierMethod.createBins():"+
+            if debug > 2:
+                print("DebugInfo: FourierMethod.createBins():"+
                       " Rq[i0="+str(i0)+"]="+str(self.Rq[i0])+
                       " Rqm="+str(Rqm)+
                       " Rq[im="+str(im)+"]="+str(self.Rq[im])+
@@ -641,6 +659,7 @@ class FourierMethod:
         return discAnalysis
 
     def findBarRegion(self, discAnalysis, alignPhases=False,
+                      maxRBarMedian=Default.maxRBarMedian,
                       minBarStrength=Default.minBarStrength,
                       minMaxBarStrength=Default.minMaxBarStrength,
                       maxDPsi=Default.maxDPsi,
@@ -662,6 +681,9 @@ class FourierMethod:
         alignPhases: bool
             align the phases discAnalysis (after return), suitable for plotting
             Default: False
+        maxRBarMedian: float
+            search for maximum bar strength at R < maxRBarMedian * median(R)
+            Default: Default.maxRBarMedian
         minMaxBarStrength: float
             require max{S} ≥ minMaxBarStrength for bar
             Default: Default.minMaxBarStrength
@@ -684,14 +706,19 @@ class FourierMethod:
             Rm:    radius at which S is maximal
         """
         # 0  sanity checks
+        if not maxRBarMedian is None and not type(maxRBarMedian) is float:
+            raise Exception("maxRBarMedian must be float or None")
         if not type(minMaxBarStrength) is float:
             raise Exception("minMaxBarStrength must be float")
         if minMaxBarStrength <= 0.0:
-            raise Exception("minMaxBarStrength = "+str(minMaxBarStrength)
-                            +" ≤ 0")
+            raise Exception("minMaxBarStrength = "+str(minMaxBarStrength)+
+                            " ≤ 0")
         if minMaxBarStrength > 0.4:
-            raise Exception("minMaxBarStrength = "+str(minMaxBarStrength)
-                            +" is too large")
+            raise Exception("minMaxBarStrength = "+str(minMaxBarStrength)+
+                            " is too large")
+        if minBarStrength >= minMaxBarStrength :
+            raise Exception("minMaxBarStrength = "+str(minMaxBarStrength)+
+                            " ≥ minBarStrength = "+str(minBarStrength))
         if not (type(maxDPsi) is float or type(maxDPsi) is int):
             raise Exception("maxDPsi must be float")
         if maxDPsi < 2:
@@ -699,19 +726,25 @@ class FourierMethod:
         if maxDPsi > 20:
             raise Exception("maxDPsi = "+str(maxDPsi)+" is too large")
         if minNumBar < 1000:
-            text = "minNumBar = "+str(minNumBar)+\
-                " is too small -- will use 1000 instead"
-            warning.warn(text)
+            warning.warn("minNumBar = "+str(minNumBar)+
+                         " is too small -- will use 1000 instead")
             minNumBar = 1000
         maxDPsi = maxDPsi * np.pi / 180.0
         # 0  obtain bar strength
         S   = self.barStrength(discAnalysis,maxm)
-        b0  = np.argmax(S)
+        if maxRBarMedian is None:
+            b0 = np.argmax(S)
+        else: 
+            Rb = discAnalysis['R'].to_numpy()
+            b0 = np.argmax(S[Rb < maxRBarMedian*self.medianR()])
         # 1  optionally align all phases
         if alignPhases:
             self.alignPhases(discAnalysis,i0=b0)
         # 2  find maximum bar strength
         Rm = discAnalysis['R'][b0]
+        if debug > 1:
+            print("DebugInfo: FourierMethod.findBarRegion(): S[b0="+str(b0)
+                  +"(@ R="+str(discAnalysis['R'][b0])+")] = "+str(S[b0]))
         if S[b0] < minMaxBarStrength:
             warnings.warn("findBarRegion: "+
                           "maximum bar strength ="+str(S[b0])+
@@ -748,16 +781,26 @@ class FourierMethod:
         # 5  obtain bar region of indices [i0,i1] into sorted tables
         i0 = int(discAnalysis['i0'][b0])
         i1 = int(discAnalysis['i1'][b1])
+        if debug > 1:
+            print("DebugInfo: FourierMethod.findBarRegion(): i0="
+                  +str(i0)+" i1="+str(i1))
         if i1 < i0 + minNumBar:
-            warnings.warn("findBarRegion: too few ("+str(i1-i0)+
-                          " < minNumBar = "+str(minNumBar)+
+            warnings.warn("FourierMethod.findBarRegion(): too few ("
+                          +str(i1-i0)+" < minNumBar = "+str(minNumBar)+
                           ") particles in candidate bar region: "+
                           "no bar identified")
             return 0,0,0.0
-        if np.log10(self.Rq[i1]/self.Rq[i0]) < 2*minDexBar:
-            warnings.warn("findBarRegion: candidate bar region too short:"+
-                          " no bar identified")
+        dlgR = 0.5*np.log10(self.Rq[i1-1]/self.Rq[i0])
+        if debug > 1:
+            print("DebugInfo: FourierMethod.findBarRegion(): log10(R1/R0)="+
+                  str(dlgR))
+        if dlgR < minDexBar:
+            warnings.warn("FourierMethod.findBarRegion(): "+
+                          "candidate bar region too short: no bar identified")
             return 0,0,0.0
+        if debug > 1:
+            print("DebugInfo: FourierMethod.findBarRegion(): i0="
+                  +str(i0)+" i1="+str(i1)+" Rm="+str(Rm))
         return i0,i1,Rm
 
     def measureOmega(self, region, m=2):
@@ -801,6 +844,7 @@ class FourierMethod:
     def patternSpeed(x,y, vx, vy, mu=1.0, m=2, checkFiniteInput=False,
                      maxm=Default.maxm, minNBin=Default.minNBin,
                      maxNBin=Default.maxNBin, maxDexBin=Default.maxDexBin,
+                     maxRBarMedian=Default.maxRBarMedian,
                      minBarStrength=Default.minBarStrength,
                      minMaxBarStrength=Default.minMaxBarStrength,
                      maxDPsi=Default.maxDPsi, minDexBar=Default.minDexBar,
@@ -843,6 +887,9 @@ class FourierMethod:
         maxDexBin: float
             maximum size of radial bin in log10(R)
             Default: Default.maxDexBin
+        maxRBarMedian: float
+            search for maximum bar strength at R < maxRBarMedian * median(R)
+            Default: Default.maxRBarMedian
         minMaxBarStrength: float
             require max{S} ≥ minMaxBarStrength for bar
             Default: Default.minMaxBarStrength
@@ -873,6 +920,7 @@ class FourierMethod:
                                 minNBin=minNBin, maxNBin=maxNBin,
                                 maxDexBin=maxDexBin)
         bar  = tool.findBarRegion(disc,alignPhases=True,
+                                  maxRBarMedian=maxRBarMedian,
                                   minBarStrength=minBarStrength,
                                   minMaxBarStrength=minMaxBarStrength,
                                   maxDPsi=maxDPsi, minDexBar=minDexBar,
