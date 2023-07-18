@@ -479,7 +479,7 @@ class FourierMethod:
             Default: Default.maxDexBin
         binOverlapDepth: int
             create this many levels of intermittent bins, giving a total of
-            2**binOverlapDepth * (NprimaryBins + 1) - 1  bins
+            2**binOverlapDepth * (NprimaryBins - 1) + 1  bins
             Default: Default.overlapDepth
 
         Returns:
@@ -577,7 +577,7 @@ class FourierMethod:
             Default: Default.maxDexBin
         binOverlapDepth: int
             create this many levels of intermittent bins, giving a total of
-            2**binOverlapDepth * (NprimaryBins + 1) - 1  bins
+            2**binOverlapDepth * (NprimaryBins - 1) + 1  bins
             Default: Default.overlapDepth
 
         Returns:
@@ -907,7 +907,7 @@ class FourierMethod:
             Default: Default.maxDexBin
         binOverlapDepth: int
             create this many levels of intermittent bins, giving a total of
-            2**binOverlapDepth * (NprimaryBins + 1) - 1  bins
+            2**binOverlapDepth * (NprimaryBins - 1) + 1  bins
             Default: Default.overlapDepth
         maxRBarMedian: float
             search for maximum bar strength at R < maxRBarMedian * median(R)
