@@ -21,9 +21,12 @@
 @version   0.5.1  jul-2023 WD  maxRBarMedian, changed some Default values
 @version   0.5.2  jul-2023 WD  maxFracBin, binOverlapDepth
 @version   0.5.3  jul-2023 WD  maxFracBin --> maxNBin (reverting)
+@version   0.6    Jul-2023 WD  Fourier analysis using azimuthal bins
+@version   0.6.1  Aug-2023 WD  better middle bar radius: max{SRΣ}
+@version   0.6.2  Aug-2023 WD  allow user provided radial bins
 
 """
-version = '0.5.3'
+version = '0.6.2'
 
 import numpy as np
 import pandas as pd
@@ -42,10 +45,13 @@ def windowDeriv(Q):
     Q1 = 1-Q
     return 2*Q1*Q1*(1+Q+Q), -12*Q*Q1
 
+def shiftAngle(psi):
+    return np.where(psi<0, psi+2*np.pi, psi)
+
 def atan(sin,cos):
     """ arctan(sin/cos) in the range [0,2π] """
     psi = np.arctan2(sin,cos)
-    return np.where(psi<0, psi+2*np.pi, psi)
+    return shiftAngle(psi)
 
 def asfarray(array, copy=False, checkFinite=False):
     """ obtain a new float array from input array """
@@ -55,6 +61,26 @@ def asfarray(array, copy=False, checkFinite=False):
     if copy and arr is array:
         arr = np.array(arr,copy=True)    # ensure we make a copy
     return arr
+
+def powerOf2AtLeast(n):
+    """ given integer n return smallest power of two ≥ n """
+    n |= n >> 1
+    n |= n >> 2
+    n |= n >> 4
+    n |= n >> 8
+    n |= n >> 16
+    return n
+
+def nextPowerOf2(n):
+    """ given integer n return smallest power of two > n """
+    return 1 if n<=0 else 1+powerOf2AtLeast(n-1)
+
+def Fourier(data,m):
+    FT = np.fft.rfft(data)
+    A0 = np.real(FT[0])
+    Am = np.abs(FT[m])
+    Pm = shiftAngle(-np.angle(FT[m]))/m
+    return A0,Am,Pm
 
 class harmonic:
     """ provide cosmφ, sinmφ at incrementable m
@@ -92,13 +118,10 @@ class harmonic:
             self.Cm = C
             self.Sm = S
             self.set_order(m)
-            
+
 def convertFourier(x, m):
-    """ given   x={ <1>, <cosmφ>, <sinmφ>,
-                    [<∂cosmφ/∂t>, <∂sinmφ/∂t>],
-                    [<∂cosmφ/∂X>, <∂sinmφ/∂X>] } and m
-        compute y={Am=Σm/Σ0, ψm, [∂ψm/∂t], [∂ψm/∂X] } 
-    """
+    """ given   x={ C0, Cm, Sm [,∂Cm/∂t, ∂Sm/∂t] [,∂Cm/∂X, ∂Sm/∂X] }, m
+        compute y={ Am=Σm/Σ0, ψm, [∂ψm/∂t], [∂ψm/∂X] }, J=∂y/∂x """
     K = (len(x)+1)//2
     y = np.zeros((K))
     J = np.zeros((K,len(x)))
@@ -125,7 +148,8 @@ def convertFourier(x, m):
     return y,J
 
 def convertAlpha(x):
-    """ given x={...,q} compute y={...,atan(q)} and Jacobian """
+    """ given   x = {...,q}
+        compute y = {...,atan(q)} and J=∂y/∂x """
     k = len(x)-1
     y = np.copy(x)
     J = np.zeros((k+1,k+1))
@@ -134,6 +158,32 @@ def convertAlpha(x):
     J[k,k] = 1.0/(1.0+y[k]*y[k])           # ∂α/∂Q = 1/(1+Q²)
     y[k]   = np.arctan(y[k])               # α = atan(Q)
     return y,J
+
+def azimuthalIndex(x,y, nphi, useFloat32=True):
+    """ given x,y find the azimuthal index into nphi equidistant bins
+
+    Input:
+    ------
+    x,y: 1D numpy arrays of float, must have same size
+        x,y positions
+    nphi: int
+        # azimuthal bins
+    useFloat32: boolean
+        convert to float32 before computing arctan. This is faster.
+        Default: True
+        
+    Return:
+    -------
+    index: 1D numpy array of ints
+        0 ≤ index < nphi such that 2π*(index-½)/nphi ≤ φ < 2π*(index+½)/nphi
+        modulo 2π
+    """
+    ftype = np.float32 if useFloat32 else x.dtype
+    phi = np.arctan2(y.astype(ftype),x.astype(ftype))
+    phi *= ftype(0.5*nphi/np.pi)
+    phi += ftype(0.5)
+    phi %= nphi
+    return phi.astype(np.intp)
 
 class FourierMethod:
     """ Fourier method for measuring pattern speed, as described by
@@ -208,8 +258,10 @@ class FourierMethod:
     
     class Default:
         """ holds default parameters
-        maxm: 6
-            maximum azimuthal wavenumber m
+        maxmSig: 6
+            maximum azimuthal wavenumber m for surface density
+        maxmVel: 2
+            maximum azimuthal wavenumber m for velocities
         minNBin: 2000
             minimum number of particles in a radial bin
         maxNBin: 32000
@@ -232,11 +284,13 @@ class FourierMethod:
         minNumBar: 50000
             minimum required number of particles in bar region
         """
-        maxm=6
+        maxmSig=6
+        maxmVel=2
+        nphi=4*max(maxmSig,maxmVel)
         minNBin=4000
         maxNBin=32000
         maxDexBin=0.05
-        binOverlapDepth=1
+        binOverlapDepth=3
         maxRBarMedian=2.4
         minBarStrength=0.025
         minMaxBarStrength=0.1
@@ -259,7 +313,6 @@ class FourierMethod:
             centred y velocities
         mu : scalar, or array-like
             particle mass(es)
-
         When providing only a sub-set or cut-out of simulation particles,
         care must be exercised to avoid a selection bias (see note on bias
         above). In particular, any positional cut must not be close to the
@@ -347,124 +400,28 @@ class FourierMethod:
                           ": will take i1="+str(nP)+" instead")
             i1 = nP
         return i0,i1
-    
-    def i0i1R0RmR1iDQfac(self, region):
-        """ auxiliary for analyseRegion() and measureOmega() """
-        i0,i1 = self.unpackRegion(region)
+
+    def DRq(self,i0,i1):
+        """ ΔR² for given bin [i0,i1] """
         nP  = len(self.Rq)
-        nB  = i1-i0
-        Rq0 = 0.5*(  self.Rq[i0]   + self.Rq[i0-1])  if i0 > 0  else 0
-        R0  = np.sqrt(Rq0)
-        Rq1 = 0.5*(  self.Rq[i1-1] + self.Rq[i1]  )  if i1 < nP else \
+        R0q = 0.5*(  self.Rq[i0]   + self.Rq[i0-1])  if i0 > 0  else 0
+        R1q = 0.5*(  self.Rq[i1-1] + self.Rq[i1]  )  if i1 < nP else \
               0.5*(3*self.Rq[i1-1] + self.Rq[i1-2])
-        R1  = np.sqrt(Rq1)
-        iD  = 1.0/(Rq1-Rq0)
-        if len(region)>2:
-            Rm  = region[2]
-            Rqm = Rm*Rm
-        else:
-            im  = (i1+i0)//2
-            Rqm = self.Rq[im] if (nB%2)==0 else (self.Rq[im]+self.Rq[im+1])/2
-            Rm  = np.sqrt(Rqm)
-        Q   = self.Rq[i0:i1]-Rqm                    # R²-Rm²
-        fac = np.where(Q<0,1/(Rq0-Rqm),1/(Rq1-Rqm)) # 1/(Re²-Rm²)
-        Q  *= fac                                   # Q=(R²-Rm²)/(Re²-Rm²)
-        return i0,i1,R0,Rm,R1,iD,Q,fac
+        return R1q-R0q
 
-    def analyseAux(self,H,dPh,iD,mW,mdWt=None,mdWx=None,correlation=False):
-        """ auxiliary for analyseRegion() and measureOmega()
-        compute A,ψ[,Ω][,α] and their uncertainties for a set of particles
-        """
-        lst = [mW]                                   # μ W
-        lst.append(mW*H.Cm)                          # μ W cosmφ
-        lst.append(mW*H.Sm)                          # μ W sinmφ
-        prp = ['A','ps']
-        if not mdWt is None:
-            lst.append(mdWt*H.Cm - H.m*mW*H.Sm*dPh)  # μ d(W cosmφ)/dt
-            lst.append(mdWt*H.Sm + H.m*mW*H.Cm*dPh)  # μ d(W sinmφ)/dt
-            prp.append('Om')
-        if not mdWx is None:
-            lst.append(mdWx*H.Cm)                    # μ d(W cosmφ)/dlnR
-            lst.append(mdWx*H.Sm)                    # μ d(W sinmφ)/dlnR
-            prp.append('al')
-        var = variance(lst)
-        var.scale(dPh.size*iD/np.pi)
-        var = var.propagate(convertFourier, args=(H.m,))
-        if not mdWx is None:
-            var = var.propagate(convertAlpha)
-        prp = [p + str(H.m) for p in prp]
-        val = pd.Series(data=var.mean(),index=prp)
-        err = pd.Series(data=var.std_of_mean(),index=[p + '_e' for p in prp])
-        ans = pd.concat((val,err))
-        if correlation:
-            return ans,var.corr()
-        return ans
-    
-    def analyseRegion(self, region, maxm=Default.maxm,
-                      computeOmega=False, computeAlpha=False, tophat=False):
-        """ compute A,ψ[,Ω][,α] and their uncertainties for m=1...maxm and 
-            particles in region
-
-        Parameters:
-        -----------
-        region: tuple of int, tuple of floats, or 'all'
-            specifying region to analyse: in case of ints: indices into sorted
-            arrays, in case of floats: radii, or simply all particles
-        maxm: int
-            maximum azimuthal wavenumber m
-            Default: Default.maxm
-        computeOmega: bool
-            compute pattern speeds Ω
-            Default: False
-        computeAlpha: bool
-            compute angle α=atan(∂ψ/∂lnR)
-            Default: False
-        tophat: bool
-            use a tophat window. A tophat window causes biased pattern
-            speeds Ωm and cannot be used for computing the angles αm.
-            Default: False
-        """
-        if maxm < 2:
-            raise Exception("maxm =",maxm,"< 2")
-        if tophat is None:
-            tophat = not (computeOmega or computeAlpha)
-        if computeAlpha and tophat:
-            raise Exception("cannot compute alpha using a tophat window")
-        if computeOmega and tophat:
-            text = "measuring a pattern speed with a top-hat "+\
-                   "window gives biased results"
-            warnings.warn(text)
-        i0,i1,R0,Rm,R1,iD,Q,fac = self.i0i1R0RmR1iDQfac(region)
-        H   = harmonic(self.Cph[i0:i1],self.Sph[i0:i1],m=0)
-        if tophat:
-            W,dW = 1.0,0.0
-        else:
-            W,dW = windowDeriv(Q)                   # W(Q), dW/dQ
-        dW  = dW*fac                                # dW/dR²
-        mu  = self.M[i0:i1]
-        mW  = mu*W                                  # μ W
-        mdWt= mu*dW*self.dRq[i0:i1] if computeOmega else None    # μ dW/dt
-        mdWx= mu*dW*(-2*Rm*Rm)      if computeAlpha else None    # μ dW/dlnR
-        sR = pd.Series(data=(i0,i1,Rm), index=('i0','i1','R'))
-        v  = variance(((i1-i0)*iD*mW/np.pi))
-        s0 = pd.Series(data=(v.mean(0),v.std_of_mean(0)), index=('Sig','Sig_e'))
-        ls = [sR,s0]
-        for m in range(1,maxm+1):
-            H.increment()
-            ls.append(self.analyseAux(H,self.dPh[i0:i1],iD,mW,mdWt,mdWx))
-        return pd.concat(ls)
-    
     def createBins(self,
                    minNBin=Default.minNBin,
                    maxNBin=Default.maxNBin,
                    maxDexBin=Default.maxDexBin,
                    binOverlapDepth=Default.binOverlapDepth):
         """ create radial bins
-
-        Input data:
-        -----------
-        Rq: array like
-            sorted table of radius-squared in ascending order
+            Method:
+            1. starting from the outer edge of the previous bin, we take at least
+            minNBin particles into the bin, but increase the bin at most maxNBin
+            particles and width in log10(R) of at most maxDexBin.
+            2. secondary bins are created between the medians of primary bins.
+            This process is repated binOverlapDepth times to create tertiary etc
+            bins.
 
         Parameters:
         -----------
@@ -542,20 +499,136 @@ class FourierMethod:
             bn = bi
         return bn
 
-    def analyseDisc(self, maxm=Default.maxm,
-                    computeOmega=False,computeAlpha=False, tophat=None,
-                    minNBin=Default.minNBin,
-                    maxNBin=Default.maxNBin,
-                    maxDexBin=Default.maxDexBin,
-                    binOverlapDepth=Default.binOverlapDepth):
-        """ create radial bins and analyse each to find Σ and Am,ψm[,Ωm][,αm]
-            for m=1...maxm, including statistical uncertainties
+    def i0i1R0RmR1iDQfac(self, region):
+        """ auxiliary for analyseRegion() and measureOmega() """
+        i0,i1 = self.unpackRegion(region)
+        nP  = len(self.Rq)
+        nB  = i1-i0
+        Rq0 = 0.5*(  self.Rq[i0]   + self.Rq[i0-1])  if i0 > 0  else 0
+        R0  = np.sqrt(Rq0)
+        Rq1 = 0.5*(  self.Rq[i1-1] + self.Rq[i1]  )  if i1 < nP else \
+              0.5*(3*self.Rq[i1-1] + self.Rq[i1-2])
+        R1  = np.sqrt(Rq1)
+        iD  = 1.0/(Rq1-Rq0)
+        if len(region)>2:
+            Rm  = region[2]
+            Rqm = Rm*Rm
+        else:
+            im  = (i1+i0)//2
+            Rqm = self.Rq[im] if (nB%2)==0 else (self.Rq[im]+self.Rq[im+1])/2
+            Rm  = np.sqrt(Rqm)
+        Q   = self.Rq[i0:i1]-Rqm                    # R²-Rm²
+        fac = np.where(Q<0,1/(Rq0-Rqm),1/(Rq1-Rqm)) # 1/(Re²-Rm²)
+        Q  *= fac                                   # Q=(R²-Rm²)/(Re²-Rm²)
+        return i0,i1,R0,Rm,R1,iD,Q,fac
+
+    def analyseAux(self,H,dPh,iD,mW,mdWt=None,mdWx=None,correlation=False):
+        """ auxiliary for analyseRegion() and measureOmega()
+            compute A,ψ[,Ω][,α] and their uncertainties for a set of particles
+        """
+        lst = [mW]                                   # μ W
+        lst.append(mW*H.Cm)                          # μ W cosmφ
+        lst.append(mW*H.Sm)                          # μ W sinmφ
+        prp = ['A','ps']
+        if not mdWt is None:
+            lst.append(mdWt*H.Cm - H.m*mW*H.Sm*dPh)  # μ d(W cosmφ)/dt
+            lst.append(mdWt*H.Sm + H.m*mW*H.Cm*dPh)  # μ d(W sinmφ)/dt
+            prp.append('Om')
+        if not mdWx is None:
+            lst.append(mdWx*H.Cm)                    # μ d(W cosmφ)/dlnR
+            lst.append(mdWx*H.Sm)                    # μ d(W sinmφ)/dlnR
+            prp.append('al')
+        var = variance(lst)
+        var.scale(dPh.size*iD/np.pi)
+        var = var.propagate(convertFourier, args=(H.m,))
+        if not mdWx is None:
+            var = var.propagate(convertAlpha)
+        prp = [p + str(H.m) for p in prp]
+        val = pd.Series(data=var.mean(),index=prp)
+        err = pd.Series(data=var.std_of_mean(),index=[p + '_e' for p in prp])
+        ans = pd.concat((val,err))
+        if correlation:
+            return ans,var.corr()
+        return ans
+    
+    def analyseRegion(self, region, maxmSig=Default.maxmSig,
+                      computeOmega=False, computeAlpha=False, tophat=False):
+        """ compute A,ψ[,Ω][,α] and their uncertainties for m=1...maxmSig and 
+            particles in region
 
         Parameters:
         -----------
-        maxm: int
+        region: tuple of int, tuple of floats, or 'all'
+            specifying region to analyse: in case of ints: indices into sorted
+            arrays, in case of floats: radii, or simply all particles
+        maxmSig: int
             maximum azimuthal wavenumber m
-            Default: Default.maxm
+            Default: Default.maxmSig
+        computeOmega: bool
+            compute pattern speeds Ω
+            Default: False
+        computeAlpha: bool
+            compute angle α=atan(∂ψ/∂lnR)
+            Default: False
+        tophat: bool
+            use a tophat window. A tophat window causes biased pattern
+            speeds Ωm and cannot be used for computing the angles αm.
+            Default: False
+
+        Returns:
+        pandas.Series containing i0,i1,R,Sig,Sig_e, plus for M=0...maxmSig:
+                                 AM,AM_e,psM,psM_e[,OmM,OmM_e][,alM,alM_e]
+        """
+        if maxmSig < 2:
+            raise Exception("maxmSig =",maxmSig,"< 2")
+        if tophat is None:
+            tophat = not (computeOmega or computeAlpha)
+        if computeAlpha and tophat:
+            raise Exception("cannot compute alpha using a tophat window")
+        if computeOmega and tophat:
+            text = "measuring a pattern speed with a top-hat "+\
+                   "window gives biased results"
+            warnings.warn(text)
+        i0,i1,R0,Rm,R1,iD,Q,fac = self.i0i1R0RmR1iDQfac(region)
+        if tophat:
+            W,dW = 1.0,0.0
+        else:
+            W,dW = windowDeriv(Q)                  # W(Q), dW/dQ
+        dW = dW*fac                                # dW/dR²
+        mu = self.M[i0:i1]
+        mW = mu*W                                  # μ W
+        mdWt = mu*dW*self.dRq[i0:i1] if computeOmega else None    # μ dW/dt
+        mdWx = mu*dW*(-2*Rm*Rm)      if computeAlpha else None    # μ dW/dlnR
+        sR = pd.Series(data=(i0,i1,Rm), index=('i0','i1','R'))
+        v  = variance(((i1-i0)*iD*mW/np.pi))
+        s0 = pd.Series(data=(v.mean(0),v.std_of_mean(0)), index=('Sig','Sig_e'))
+        ls = [sR,s0]
+        H = harmonic(self.Cph[i0:i1],self.Sph[i0:i1],m=0)
+        for m in range(1,maxmSig+1):
+            H.increment()
+            ls.append(self.analyseAux(H,self.dPh[i0:i1],iD,mW,mdWt,mdWx))
+        return pd.concat(ls)
+        
+    def analyseDiscOld(self, bins,
+                       maxmSig=Default.maxmSig,
+                       computeOmega=False,computeAlpha=False, tophat=None):
+        """ analyse each bin to find Σ and Am,ψm[,Ωm][,αm] for m=1...maxmSig,
+            including statistical uncertainties
+
+            This is the old code, which computes the Fourier series by summing
+            harmonics over the particles. This is slow but more accurate than
+            first binning in azimuth and then performing a DFT over the bins.
+
+        Input:
+        ------
+        bins: list of pairs
+            each pair (i0,i1) = indices into sorted table of radii
+
+        Parameters:
+        -----------
+        maxmSig: int
+            maximum azimuthal wavenumber m
+            Default: Default.maxmSig
         computeOmega: bool
             compute pattern speeds Ωm
             Default: False
@@ -566,64 +639,223 @@ class FourierMethod:
             use a tophat window. A tophat window causes biased pattern
             speeds Ωm and cannot be used for computing the angles αm.
             Default: not (computeOmega or computeAlpha)
-        minNBin: int
-            minimum number of particles in radial bin
-            Default: Default.minNBin
-        maxNBin: int
-            maximum number of particles in a radial bin
-            Default: Default.maxNBin
-        maxDexBin: float
-            if NBin > minNBin: maximum size of radial bin in log10(R)
-            Default: Default.maxDexBin
-        binOverlapDepth: int
-            create this many levels of intermittent bins, giving a total of
-            2**binOverlapDepth * (NprimaryBins - 1) + 1  bins
-            Default: Default.binOverlapDepth
 
         Returns:
         --------
-        pandas.DataFrame with each row the result of analyseRegion() for bins
-        as returned by createBins()
+        pandas.DataFrame with rows the result of analyseRegion() for each bin
         """
-        if maxm < 2:
-            raise Exception("maxm =",maxm,"< 2")
-        b = self.createBins(minNBin=minNBin,maxNBin=maxNBin,
-                            maxDexBin=maxDexBin,binOverlapDepth=binOverlapDepth)
-        a = self.analyseRegion(b[0],maxm=maxm,computeOmega=computeOmega,
+        if maxmSig < 2:
+            raise Exception("maxmSig =",maxmSig,"< 2")
+        a = self.analyseRegion(bins[0],maxmSig=maxmSig,computeOmega=computeOmega,
                                computeAlpha=computeAlpha,tophat=tophat)
         d = pd.DataFrame(columns=a.index)
         d.loc[0] = a.to_numpy()
-        for k in range(1,len(b)):
-            a = self.analyseRegion(b[k],maxm=maxm,computeOmega=computeOmega,
+        for k in range(1,len(bins)):
+            a = self.analyseRegion(bins[k],maxmSig=maxmSig,
+                                   computeOmega=computeOmega,
                                    computeAlpha=computeAlpha,tophat=tophat)
             d.loc[k] = a.to_numpy()
         return d
-    
+
+    def analyseBin(self,rbin,index,nphi,maxmSig,maxmVel,vels=[]):
+        """ auxiliary for analyseDiscNew:
+            analyse a single radial bin
+
+        Input:
+        ------
+        rbin: pair of ints
+            i0,i1: radial bin
+        index: 1D array of int
+            index into nphi azimuthal bins
+        nphi: int
+            number of bins used to create index
+        maxmSig: int
+            maximum azimuthal wavenumber m for surface density
+        maxmVel: int
+            maximum azimuthal wavenumber m for velocity analysis
+        vels: empty list or pair of arrays
+            if not empty: Vr,Vφ for all particles
+
+        Returns:
+        --------
+        pandas.Series
+            full analysis of Σ[,Vr,Vφ]
+        """
+        i0 = rbin[0]
+        i1 = rbin[1]
+        nB = i1-i0
+        ringArea = np.pi * self.DRq(i0,i1)
+        jn = index[i0:i1]
+        mu = self.M[i0:i1]
+        m1 = np.arange(1,maxmSig+1)
+        lS = []
+        # analyse Σ
+        M = np.bincount(jn, weights=mu, minlength=nphi)
+        Sig,Am,Pm = Fourier(M/ringArea,m1)
+        Am /= Sig
+        im = (i0+i1)//2
+        Rm = np.sqrt(self.Rq[im] if(nB%2)==0 else (self.Rq[im]+self.Rq[im+1])/2)
+        lS.append(pd.Series([i0,i1,Rm,Sig],['i0','i1','R','Sig']))
+        lS.append(pd.Series(Am,['A'+str(m) for m in m1]))
+        lS.append(pd.Series(Pm,['ps'+str(m) for m in m1]))
+        # analyse U,V
+        if len(vels):
+            m1 = np.arange(1,maxmVel+1)
+            vR,vP = vels[0][i0:i1], vels[1][i0:i1]
+            UVrms = np.sqrt(np.sum(mu*(vR**2+vP**2))/sum(mu))
+            lS.append(pd.Series([UVrms],['UVrms']))
+            for v,n in zip([vR,vP],['U','V']):
+                V  = np.bincount(jn, weights=mu*v, minlength=nphi) / M
+                A0,Am,Pm = Fourier(V/(UVrms*nphi),m1)
+                lS.append(pd.Series([A0],[n+'0']))
+                lS.append(pd.Series(Am,[n+str(m) for m in m1]))
+                lS.append(pd.Series(Pm,['ps'+n+str(m) for m in m1]))
+        return pd.concat(lS)
+     
+    def analyseDiscNew(self, bins,
+                       maxmSig=Default.maxmSig, nphi=0, analyseVel=False,
+                       maxmVel=Default.maxmVel, minNBin=Default.minNBin):
+        """ analyse each bin to find Σ and Am,ψm[,Ωm][,αm] for m=1...maxmSig
+            and optionaly analyse Vr,Vφ for m=0...maxmVel
+
+            We first bin each radial bin in azimuth and then perform a DFT.
+
+        Input:
+        ------
+        bins: list of pairs
+            each pair (i0,i1) = indices into sorted table of radii
+
+        Parameters:
+        -----------
+        maxmSig: int
+            maximum azimuthal wavenumber m for surface density
+            Default: Default.maxmSig
+        nphi: int
+            number of azimuthal bins used to obtain Fourier Series
+            Default: 4*max(maxmSig,maxmVel)
+        analyseVel: bool
+            Fourier analyse Vr,Vφ as well as Σ
+            Default: False
+        maxmVel: int
+            maximum azimuthal wavenumber m for velocities
+            Default: Default.maxmVel
+
+        Returns:
+        --------
+        pandas.DataFrame with rows the result of analyseBin() for each bin
+        """
+        if maxmSig < 2:
+            raise Exception("maxmSig =",maxmSig,"< 2")
+        if maxmVel < 2:
+            raise Exception("maxmVel =",maxmVel,"< 2")
+        if nphi <= 0:
+            nphi = nextPowerOf2(2*max(maxmVel,maxmSig))
+        elif nphi <= 2*maxmSig:
+            raise Exception("nphi=",nphi," ≤ 2*maxmSig =",2*maxmSig)
+        elif analyseVel and nphi <= 2*maxmVel:
+            raise Exception("nphi=",nphi," ≤ 2*maxmVel =",2*maxmVel)
+        i = azimuthalIndex(self.Cph,self.Sph,nphi)
+        if analyseVel:
+            R  = np.sqrt(self.Rq)
+            vR = 0.5*self.dRq/R
+            vP = self.dPh*R
+            UV = (vR,vP)
+        else:
+            UV = []
+        a = self.analyseBin(bins[0],i,nphi,maxmSig,maxmVel,UV)
+        d = pd.DataFrame(columns=a.index)
+        d.loc[0] = a.to_numpy()
+        for k in range(1,len(bins)):
+            a = self.analyseBin(bins[k],i,nphi,maxmSig,maxmVel,UV)
+            d.loc[k] = a.to_numpy()
+        return d
+
+    def analyseDisc(self, bins,
+                    maxmSig=Default.maxmSig, nphi=0, analyseVel=False,
+                    maxmVel=Default.maxmVel,
+                    oldCode=False,
+                    computeOmega=False,computeAlpha=False, tophat=None):
+        """ analyse each bin to find Σ and Am,ψm[,Ωm][,αm] for m=1...maxmSig
+            and optionaly analyse Vr,Vφ for m=0...maxmVel
+
+        Input:
+        ------
+        bins: list of pairs
+            each pair (i0,i1) = indices into sorted table of radii
+
+        Parameters:
+        -----------
+        maxmSig: int
+            maximum azimuthal wavenumber m for surface density
+            Default: Default.maxmSig
+        nphi: int
+            number of azimuthal bins used to obtain Fourier Series
+            Default: 4*max(maxmSig,maxmVel)
+        analyseVel: bool
+            Fourier analyse Vr,Vφ as well as Σ
+            Default: False
+        maxmVel: int
+            maximum azimuthal wavenumber m for velocities
+            Default: Default.maxmVel
+        oldCode: bool
+            use old method, member analyseDiscOld(), which does only analyse Σ
+            and provides statistical uncertainties
+            Default: False
+        computeOmega: bool
+            if oldCode==True: compute pattern speeds Ωm
+            Default: False
+        computeAlpha: bool
+            if oldCode==True: compute angles αm=atan(∂ψm/∂lnR)
+            Default: False
+        tophat: bool
+            if oldCode==True: use a tophat window. This causes biased pattern
+            speeds Ωm and cannot be used for computing the angles αm.
+            Default: not (computeOmega or computeAlpha)
+
+        Returns:
+        --------
+        pandas.DataFrame with rows the result of analyseBin() (or
+        analyseRegion() if oldCode=True) applied to each bin
+        """
+        if oldCode:
+            return self.analyseDiscOld(bins=bins, maxmSig=maxmSig,
+                                       computeOmega=computeOmega,
+                                       computeAlpha=computeAlpha,
+                                       tophat=tophat)
+        else:
+            return self.analyseDiscNew(bins=bins, maxmSig=maxmSig, nphi=nphi,
+                                       analyseVel=analyseVel, maxmVel=maxmVel)
+
     @staticmethod
     def maximumWaveNumber(discAnalysis):
-        """ auxiliary: find maximum m used in disc analysis
+        """ auxiliary: find maximum m used for Σ in disc analysis
         Input data:
         discAnalysis: pandas.DataFrame
             output from analyseDisc()
         """
-        names = discAnalysis.columns.to_list()
+        if   isinstance(discAnalysis, pd.DataFrame):
+            names = discAnalysis.columns.to_list()
+        elif isinstance(discAnalysis, pd.Series):
+            names = discAnalysis.index.to_list()
+        else:
+            raise Exception("argument has unknown object type")
         m = 0
         while(names.count('A'+str(m+1))):
             m += 1
         return m
 
     @staticmethod
-    def barStrength(discAnalysis, maxm=None):
+    def barStrength(discAnalysis, maxmSig=None):
         """" auxiliary: compute bar strength S=rms{A[m=even]} - rms{A[m=odd]}
         Input data:
         discAnalysis: pandas.DataFrame
             output from analyseDisc()
         """
-        if maxm is None:
-            maxm = FourierMethod.maximumWaveNumber(discAnalysis)
-        if maxm < 2:
-            raise Exception("require maxm ≥ 2 with analyseDisc()")
-        Am = discAnalysis[['A'+str(m) for m in range(1,maxm+1)]].to_numpy()
+        if maxmSig is None:
+            maxmSig = FourierMethod.maximumWaveNumber(discAnalysis)
+        if maxmSig < 2:
+            raise Exception("require maxmSig ≥ 2 with analyseDisc()")
+        Am = discAnalysis[['A'+str(m) for m in range(1,maxmSig+1)]].to_numpy()
         Ae = Am[:,1::2]
         Ao = Am[:,0::2]
         S  = np.sqrt((Ae*Ae).sum(axis=1)) - np.sqrt((Ao*Ao).sum(axis=1))
@@ -668,8 +900,8 @@ class FourierMethod:
     @staticmethod
     def alignPhases(discAnalysis, i0=0):
         """ align the phases in discAnalysis """
-        maxm = FourierMethod.maximumWaveNumber(discAnalysis)
-        for m in range(1,maxm+1):
+        maxmSig = FourierMethod.maximumWaveNumber(discAnalysis)
+        for m in range(1,maxmSig+1):
             label = 'ps'+str(m)
             discAnalysis[label] = FourierMethod.alignPhase(
                 discAnalysis[label].to_numpy(),m,i0)
@@ -682,7 +914,7 @@ class FourierMethod:
                       maxDPsi=Default.maxDPsi,
                       minDexBar=Default.minDexBar,
                       minNumBar=Default.minNumBar,
-                      maxm=None):
+                      maxmSig=None):
         """ find bar region using a variation of the method described by Dehnen
             et al, (2023, Appendix C). In particular, instead of A[m=2], we use
                 S = rms{A[m=even]} - rms{A[m=odd]}
@@ -720,7 +952,7 @@ class FourierMethod:
         Returns: i0,i1,Rm
         -----------------
             i0,i1: indices into sorted data arrays for bar region
-            Rm:    radius at which S is maximal
+            Rm:    radius at which (Σ R S) is maximal
         """
         # 0  sanity checks
         if not maxRBarMedian is None and not type(maxRBarMedian) is float:
@@ -743,12 +975,12 @@ class FourierMethod:
         if maxDPsi > 20:
             raise Exception("maxDPsi = "+str(maxDPsi)+" is too large")
         if minNumBar < 1000:
-            warning.warn("minNumBar = "+str(minNumBar)+
-                         " is too small -- will use 1000 instead")
+            warnings.warn("minNumBar = "+str(minNumBar)+
+                          " is too small -- will use 1000 instead")
             minNumBar = 1000
         maxDPsi = maxDPsi * np.pi / 180.0
         # 0  obtain bar strength
-        S   = self.barStrength(discAnalysis,maxm)
+        S = self.barStrength(discAnalysis,maxmSig)
         if maxRBarMedian is None:
             b0 = np.argmax(S)
         else: 
@@ -782,6 +1014,14 @@ class FourierMethod:
         # such an extension is not possible.
         w0 = width(psi[b0-1]) if b0  >0  and S[b0-1]>minBarStrength else 2
         w1 = width(psi[b1+1]) if b1+1<nB and S[b1+1]>minBarStrength else 2
+        if debug > 2:
+            t0 = " w-={:.6f} S-={:.6f}".format(
+                np.rad2deg(width(psi[b0-1])),S[b0-1]) if b0  > 0 else ''
+            t1 = " w+={:.6f} S+={:.6f}".format(
+                np.rad2deg(width(psi[b1+1])),S[b1+1]) if b0+1<nB else ''
+            print("DebugInfo: b0=b1="+str(b0)
+                  +": R={:.6f} S={:.6f}".format(discAnalysis['R'][b0],S[b0])
+                  +t0+t1)
         while min(w0,w1) < maxDPsi:
             if w0 < w1:
                 b0-= 1
@@ -789,15 +1029,29 @@ class FourierMethod:
                     if b0  >0  and S[b0-1]>minBarStrength else 2
                 psimin = min(psi[b0],psimin)
                 psimax = max(psi[b0],psimax)
+                if debug > 2:
+                    t0 = " w-={:.6f} S-={:.6f}".format(
+                        np.rad2deg(width(psi[b0-1])),S[b0-1]) \
+                        if b0  > 0 else ''
+                    print("DebugInfo: b0="+str(b0)
+                          +": R={:.6f} S={:.6f}".format(
+                              discAnalysis['R'][b0],S[b0])+t0)
             else:
                 b1+= 1
                 w1 = width(psi[b1+1]) \
                     if b1+1<nB and S[b1+1]>minBarStrength else 2
                 psimin = min(psi[b1],psimin)
                 psimax = max(psi[b1],psimax)
+                if debug > 2:
+                    t1 = " w+={:.6f} S+={:.6f}".format(
+                        np.rad2deg(width(psi[b1+1])),S[b1+1]) \
+                        if b0+1<nB else ''
+                    print("DebugInfo: b1="+str(b1)
+                          +": R={:.6f} S={:.6f}".format(
+                              discAnalysis['R'][b1],S[b1])+t1)
         # 5  obtain bar region of indices [i0,i1] into sorted tables
-        i0 = int(discAnalysis['i0'][b0])
-        i1 = int(discAnalysis['i1'][b1])
+        i0 = int((discAnalysis['i0'][b0]+discAnalysis['i1'][b0])/2)
+        i1 = int((discAnalysis['i0'][b1]+discAnalysis['i1'][b1])/2)
         if debug > 1:
             print("DebugInfo: FourierMethod.findBarRegion(): i0="
                   +str(i0)+" i1="+str(i1))
@@ -818,6 +1072,9 @@ class FourierMethod:
         if debug > 1:
             print("DebugInfo: FourierMethod.findBarRegion(): i0="
                   +str(i0)+" i1="+str(i1)+" Rm="+str(Rm))
+        # 6  find maximum rM of ΣRS within bar region, set Rm=√(Rm*rM)
+        SR = S * discAnalysis['R'] * discAnalysis['Sig']
+        Rm = np.sqrt(Rm*discAnalysis['R'][b0+np.argmax(SR[b0:b1+1])])
         return i0,i1,Rm
 
     def measureOmega(self, region, m=2):
@@ -859,7 +1116,7 @@ class FourierMethod:
         
     @staticmethod
     def patternSpeed(x,y, vx, vy, mu=1.0, m=2, checkFiniteInput=False,
-                     maxm=Default.maxm, minNBin=Default.minNBin,
+                     maxmSig=Default.maxmSig, minNBin=Default.minNBin,
                      maxNBin=Default.maxNBin, maxDexBin=Default.maxDexBin,
                      binOverlapDepth=Default.binOverlapDepth,
                      maxRBarMedian=Default.maxRBarMedian,
@@ -893,9 +1150,9 @@ class FourierMethod:
         checkFiniteInput: bool
             check input data for NaN or Inf
             Default: False
-        maxm: int
+        maxmSig: int
             maximum azimuthal wavenumber used in Fourier analysis of disc
-            Detault: Default.maxm
+            Detault: Default.maxmSig
         minNBin: int
             minimum number of particles in radial bin
             Default: Default.minNBin
@@ -938,10 +1195,10 @@ class FourierMethod:
         disc: pandas.dataFrame holding Fourier analysis with phases aligned
         """
         tool = FourierMethod(x,y,vx,vy,mu,checkFinite=checkFiniteInput)
-        disc = tool.analyseDisc(maxm=maxm, tophat=tophatFourier,
-                                minNBin=minNBin, maxNBin=maxNBin,
-                                maxDexBin=maxDexBin,
-                                binOverlapDepth=binOverlapDepth)
+        bins = tool.createBins(minNBin=minNBin, maxNBin=maxNBin,
+                               maxDexBin=maxDexBin,
+                               binOverlapDepth=binOverlapDepth)
+        disc = tool.analyseDisc(bins,maxmSig=maxmSig, tophat=tophatFourier)
         bar  = tool.findBarRegion(disc,alignPhases=True,
                                   maxRBarMedian=maxRBarMedian,
                                   minBarStrength=minBarStrength,
