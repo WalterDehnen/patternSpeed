@@ -27,7 +27,7 @@
 @version   0.6.3  nov-2023 WD  add oldCode as option for patternSpeed()
 
 """
-version = '0.6.2'
+version = '0.6.3'
 
 import numpy as np
 import pandas as pd
