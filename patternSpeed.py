@@ -21,9 +21,10 @@
 @version   0.5.1  jul-2023 WD  maxRBarMedian, changed some Default values
 @version   0.5.2  jul-2023 WD  maxFracBin, binOverlapDepth
 @version   0.5.3  jul-2023 WD  maxFracBin --> maxNBin (reverting)
-@version   0.6    Jul-2023 WD  Fourier analysis using azimuthal bins
-@version   0.6.1  Aug-2023 WD  better middle bar radius: max{SRΣ}
-@version   0.6.2  Aug-2023 WD  allow user provided radial bins
+@version   0.6    jul-2023 WD  Fourier analysis using azimuthal bins
+@version   0.6.1  aug-2023 WD  better middle bar radius: max{SRΣ}
+@version   0.6.2  aug-2023 WD  allow user provided radial bins
+@version   0.6.3  nov-2023 WD  add oldCode as option for patternSpeed()
 
 """
 version = '0.6.2'
@@ -846,7 +847,7 @@ class FourierMethod:
 
     @staticmethod
     def barStrength(discAnalysis, maxmSig=None):
-        """" auxiliary: compute bar strength S=rms{A[m=even]} - rms{A[m=odd]}
+        """ auxiliary: compute bar strength S=rms{A[m=even]} - rms{A[m=odd]}
         Input data:
         discAnalysis: pandas.DataFrame
             output from analyseDisc()
@@ -863,7 +864,7 @@ class FourierMethod:
         
     @staticmethod
     def alignPhase(psi, m, i0=0, out=None):
-        """" auxiliary: align phases radially
+        """ auxiliary: align phases radially
         Input data:
         -----------
         psi: 1D array of float
@@ -1123,7 +1124,8 @@ class FourierMethod:
                      minBarStrength=Default.minBarStrength,
                      minMaxBarStrength=Default.minMaxBarStrength,
                      maxDPsi=Default.maxDPsi, minDexBar=Default.minDexBar,
-                     minNumBar=Default.minNumBar, tophatFourier=True):
+                     minNumBar=Default.minNumBar, tophatFourier=True,
+                     oldCode=False):
         """ combines everything
             improved Dehnen et al. (2023) Fourier method for measurng pattern
             speed in one go (discarding any intermediate results, such as the
@@ -1188,6 +1190,11 @@ class FourierMethod:
             use a top-hat weighting (instead of a smooth window) for the Fourier
             analysis in radial bins. This is recommended and causes no bias.
             Default: True
+        oldCode: bool
+            use the old method for the disc analysis, which uses sum of
+            harmonics instead of FFT. This is somewhat slower, but also
+            provides the statistical uncertainties for Am and ψm.
+            Default: False
 
         Returns: pattern, disc
         pattern: pandas.Series holding R0,R1,Rm,ψ,Ω,ψ_e,Ω_e,corr(ψ,Ω)
@@ -1198,7 +1205,8 @@ class FourierMethod:
         bins = tool.createBins(minNBin=minNBin, maxNBin=maxNBin,
                                maxDexBin=maxDexBin,
                                binOverlapDepth=binOverlapDepth)
-        disc = tool.analyseDisc(bins,maxmSig=maxmSig, tophat=tophatFourier)
+        disc = tool.analyseDisc(bins,maxmSig=maxmSig, tophat=tophatFourier,
+                                oldCode=oldCode)
         bar  = tool.findBarRegion(disc,alignPhases=True,
                                   maxRBarMedian=maxRBarMedian,
                                   minBarStrength=minBarStrength,
